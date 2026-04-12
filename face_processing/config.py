@@ -96,6 +96,7 @@ class PipelineConfig:
     ranking: RankingThresholds = field(default_factory=RankingThresholds)
     export: ExportConfig = field(default_factory=ExportConfig)
     save_frame_log: bool = False
+    keep_normalized: bool = False
     output_dir: str = "output"
 
     @staticmethod
@@ -117,7 +118,7 @@ class PipelineConfig:
                 for k, v in data[key].items():
                     if hasattr(sub, k):
                         setattr(sub, k, v)
-        for k in ("save_frame_log", "output_dir"):
+        for k in ("save_frame_log", "keep_normalized", "output_dir"):
             if k in data:
                 setattr(cfg, k, data[k])
         return cfg

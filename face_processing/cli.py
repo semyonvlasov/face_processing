@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Use GPU (Metal) for MediaPipe inference",
     )
+    parser.add_argument(
+        "--keep-normalized",
+        action="store_true",
+        help="Keep normalized video for later restore",
+    )
 
     args = parser.parse_args(argv)
 
@@ -64,6 +69,8 @@ def main(argv: list[str] | None = None) -> None:
     config.save_frame_log = args.save_frame_log
     if args.gpu:
         config.detection.use_gpu = True
+    if args.keep_normalized:
+        config.keep_normalized = True
 
     # Run pipeline
     result = process_video(args.input, config)

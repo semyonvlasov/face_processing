@@ -81,7 +81,8 @@ def process_video(input_path: str, config: PipelineConfig | None = None) -> Vide
         _write_drop_report(out_dir, result)
         if config.save_frame_log:
             save_frame_log(frame_data, os.path.join(out_dir, f"{source_name}_frame_log.csv"))
-        _cleanup(normalized_path)
+        if not config.keep_normalized:
+            _cleanup(normalized_path)
         logger.info("Video DROPPED: %s", reason)
         return result
 
@@ -129,9 +130,14 @@ def process_video(input_path: str, config: PipelineConfig | None = None) -> Vide
 
     # Optional frame log
     if config.save_frame_log:
-        save_frame_log(frame_data, os.path.join(out_dir, f"{source_name}_frame_log.csv"))
+        save_frame_log(
+            frame_data,
+            os.path.join(out_dir, f"{source_name}_frame_log.csv"),
+            segments=result.segments,
+        )
 
-    _cleanup(normalized_path)
+    if not config.keep_normalized:
+        _cleanup(normalized_path)
     logger.info("=== Done: %d segments exported ===", len(exportable))
     return result
 

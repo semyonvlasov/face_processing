@@ -3,15 +3,28 @@ from __future__ import annotations
 import csv
 import logging
 
-from face_processing.models import FrameData
+from face_processing.models import FrameData, Segment
 
 logger = logging.getLogger(__name__)
 
 
-def save_frame_log(frame_data: list[FrameData], output_path: str) -> None:
-    """Save per-frame metrics to CSV for debugging and threshold tuning."""
+def save_frame_log(
+    frame_data: list[FrameData],
+    output_path: str,
+    segments: list[Segment] | None = None,
+) -> None:
+    """Save per-frame metrics to CSV for debugging and restore."""
+    # Build frame_idx -> (segment_id, output_size) map
+    seg_map: dict[int, tuple[int, int]] = {}
+    if segments:
+        for seg in segments:
+            if seg.status == "exported" and seg.output_size is not None:
+                for fd in seg.frame_data:
+                    seg_map[fd.frame_idx] = (seg.segment_id, seg.output_size)
+
     fieldnames = [
         "frame_idx",
+        "segment_id", "output_size",
         "num_faces",
         "face_detected",
         "confidence",
@@ -34,8 +47,11 @@ def save_frame_log(frame_data: list[FrameData], output_path: str) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for fd in frame_data:
+            seg_id, out_size = seg_map.get(fd.frame_idx, ("", ""))
             row = {
                 "frame_idx": fd.frame_idx,
+                "segment_id": seg_id,
+                "output_size": out_size,
                 "num_faces": fd.num_faces,
                 "face_detected": fd.face_detected,
                 "confidence": round(fd.confidence, 4),
