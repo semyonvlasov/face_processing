@@ -38,6 +38,11 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Enable verbose logging",
     )
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Use GPU (Metal) for MediaPipe inference",
+    )
 
     args = parser.parse_args(argv)
 
@@ -57,6 +62,8 @@ def main(argv: list[str] | None = None) -> None:
 
     config.output_dir = args.output_dir
     config.save_frame_log = args.save_frame_log
+    if args.gpu:
+        config.detection.use_gpu = True
 
     # Run pipeline
     result = process_video(args.input, config)

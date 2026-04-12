@@ -20,6 +20,33 @@ DROP_REASON_PRIORITY = [
 ]
 
 
+def smooth_pose(frame_data: list[FrameData], window: int = 5) -> None:
+    """Smooth yaw/pitch/roll with a centered moving average (mutates in place)."""
+    half = window // 2
+    n = len(frame_data)
+
+    raw_yaw = [fd.yaw for fd in frame_data]
+    raw_pitch = [fd.pitch for fd in frame_data]
+    raw_roll = [fd.roll for fd in frame_data]
+    valid = [fd.pose_valid and fd.face_detected and fd.num_faces == 1 for fd in frame_data]
+
+    for i in range(n):
+        if not valid[i]:
+            continue
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        yaws, pitches, rolls = [], [], []
+        for j in range(lo, hi):
+            if valid[j]:
+                yaws.append(raw_yaw[j])
+                pitches.append(raw_pitch[j])
+                rolls.append(raw_roll[j])
+        if yaws:
+            frame_data[i].yaw = sum(yaws) / len(yaws)
+            frame_data[i].pitch = sum(pitches) / len(pitches)
+            frame_data[i].roll = sum(rolls) / len(rolls)
+
+
 def compute_deltas(frame_data: list[FrameData]) -> None:
     """Fill inter-frame delta fields on each FrameData (mutates in place)."""
     for i in range(1, len(frame_data)):
@@ -70,8 +97,6 @@ def classify_frames(
         if fd.face_detected and fd.num_faces == 1:
             # --- low confidence ---
             if fd.confidence < thresholds.min_confidence:
-                reasons.append("low_face_confidence")
-            if fd.reprojection_error > thresholds.max_reprojection_error:
                 reasons.append("low_face_confidence")
 
             # --- face too small ---

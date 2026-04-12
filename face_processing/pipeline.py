@@ -15,6 +15,7 @@ from face_processing.frame_quality import (
     classify_frames,
     compute_deltas,
     pick_primary_reason,
+    smooth_pose,
 )
 from face_processing.logging_utils import save_frame_log
 from face_processing.models import Segment, VideoResult
@@ -50,11 +51,12 @@ def process_video(input_path: str, config: PipelineConfig | None = None) -> Vide
 
     # --- Stage 2: Face analysis ---
     logger.info("=== Stage 2: Analyzing frames ===")
-    frame_data = analyze_frames(normalized_path, config.detection, config.pose)
+    frame_data = analyze_frames(normalized_path, config.detection)
     result.frame_data = frame_data
 
-    # --- Stage 3: Compute deltas and classify ---
-    logger.info("=== Stage 3: Classifying frames ===")
+    # --- Stage 3: Smooth pose, compute deltas, classify ---
+    logger.info("=== Stage 3: Smoothing pose + classifying frames ===")
+    smooth_pose(frame_data, window=5)
     compute_deltas(frame_data)
     classify_frames(frame_data, config.bad_frame, frame_w, frame_h)
 
@@ -83,28 +85,32 @@ def process_video(input_path: str, config: PipelineConfig | None = None) -> Vide
         logger.info("Video DROPPED: %s", reason)
         return result
 
-    # --- Stages 5-6: Rank and export each segment ---
-    logger.info("=== Stages 5-6: Ranking and exporting ===")
+    # --- Stage 5: Ranking ---
+    logger.info("=== Stage 5: Ranking segments ===")
     for seg in exportable:
-        # Compute output size (S)
-        S = compute_output_size(seg, normalized_path, frame_w, frame_h)
+        S = compute_output_size(seg, frame_w, frame_h)
         seg.output_size = S
-
-        # Compute metrics and rank
         metrics = compute_segment_metrics(seg)
         seg.metrics = metrics
         seg.rank = rank_segment(metrics, config.ranking, S)
+        logger.info(
+            "  Segment %d: frames %d-%d (%d frames), size=%dx%d, rank=%s",
+            seg.segment_id, seg.start_frame, seg.end_frame,
+            seg.length, S, S, seg.rank,
+        )
 
-        # Export video
+    # --- Stage 6: Exporting ---
+    logger.info("=== Stage 6: Exporting segments ===")
+    for seg in exportable:
         seg_filename = f"{source_name}_seg_{seg.segment_id:03d}.mp4"
         seg_path = os.path.join(out_dir, seg_filename)
         export_segment(
             seg, normalized_path, seg_path,
-            frame_w, frame_h, S, config.export,
+            frame_w, frame_h, seg.output_size, config.export,
+            source_video_path=input_path,
         )
         seg.status = "exported"
 
-        # Write segment JSON
         meta = seg.to_dict(
             source_video=os.path.basename(input_path),
             export_mode=config.export.mode,
@@ -113,10 +119,7 @@ def process_video(input_path: str, config: PipelineConfig | None = None) -> Vide
         with open(json_path, "w") as f:
             json.dump(meta, f, indent=2)
 
-        logger.info(
-            "  Segment %d: %d frames, rank=%s, size=%d, -> %s",
-            seg.segment_id, seg.length, seg.rank, S, seg_filename,
-        )
+        logger.info("  Exported segment %d -> %s", seg.segment_id, seg_filename)
 
     result.segments = all_segments
     result.status = "processed"

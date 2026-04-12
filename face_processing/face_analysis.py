@@ -5,23 +5,31 @@ import logging
 import cv2
 import mediapipe as mp
 import numpy as np
+from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
-from face_processing.config import DetectionConfig, PoseConfig
-from face_processing.face_model_3d import estimate_head_pose
+from face_processing.config import DetectionConfig
+from face_processing.face_model_3d import extract_euler_from_transform
 from face_processing.models import FrameData
 
 logger = logging.getLogger(__name__)
 
 
 def _create_detector(config: DetectionConfig) -> vision.FaceLandmarker:
-    base_options = mp.tasks.python.BaseOptions(
+    delegate = (
+        mp.tasks.BaseOptions.Delegate.GPU
+        if config.use_gpu
+        else mp.tasks.BaseOptions.Delegate.CPU
+    )
+    delegate_name = "GPU (Metal)" if config.use_gpu else "CPU"
+    logger.info("MediaPipe delegate: %s", delegate_name)
+    base_options = python.BaseOptions(
         model_asset_path=config.model_path,
-        delegate=mp.tasks.BaseOptions.Delegate.CPU,
+        delegate=delegate,
     )
     options = vision.FaceLandmarkerOptions(
         base_options=base_options,
-        running_mode=mp.tasks.vision.FaceDetectorOptions.running_mode.IMAGE,
+        running_mode=vision.RunningMode.IMAGE,
         output_face_blendshapes=False,
         output_facial_transformation_matrixes=True,
         num_faces=config.num_faces,
@@ -34,12 +42,9 @@ def _create_detector(config: DetectionConfig) -> vision.FaceLandmarker:
 def analyze_frames(
     video_path: str,
     detection_config: DetectionConfig | None = None,
-    pose_config: PoseConfig | None = None,
 ) -> list[FrameData]:
     if detection_config is None:
         detection_config = DetectionConfig()
-    if pose_config is None:
-        pose_config = PoseConfig()
 
     detector = _create_detector(detection_config)
     cap = cv2.VideoCapture(video_path)
@@ -66,12 +71,17 @@ def analyze_frames(
 
         fd = _process_frame(
             frame_bgr, frame_idx, frame_w, frame_h, frame_area,
-            detector, pose_config,
+            detector, detection_config.use_gpu,
         )
         results.append(fd)
 
         if frame_idx % 500 == 0:
             logger.info("  frame %d / %d", frame_idx, total_frames)
+        logger.debug(
+            "  frame %d: faces=%d size=%.0fx%.0f yaw=%.1f pitch=%.1f roll=%.1f conf=%.2f",
+            frame_idx, fd.num_faces, fd.face_w, fd.face_h,
+            fd.yaw, fd.pitch, fd.roll, fd.confidence,
+        )
         frame_idx += 1
 
     cap.release()
@@ -87,12 +97,16 @@ def _process_frame(
     frame_h: int,
     frame_area: int,
     detector: vision.FaceLandmarker,
-    pose_config: PoseConfig,
+    use_gpu: bool = False,
 ) -> FrameData:
     fd = FrameData(frame_idx=frame_idx)
 
-    frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+    if use_gpu:
+        frame_rgba = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGBA)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=frame_rgba)
+    else:
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
 
     try:
         detection_result = detector.detect(mp_image)
@@ -138,22 +152,16 @@ def _process_frame(
     fd.cy = (y1 + y2) / 2.0
     fd.face_area_ratio = (fd.face_w * fd.face_h) / frame_area if frame_area > 0 else 0.0
 
-    # Transformation matrix (if available)
+    # Head pose from MediaPipe transformation matrix (uses full 478-point mesh)
     if detection_result.facial_transformation_matrixes:
-        fd.transform_matrix = np.array(
-            detection_result.facial_transformation_matrixes[0]
-        )
-
-    # Head pose estimation via solvePnP (only for single-face frames)
-    if num_faces == 1:
-        yaw, pitch, roll, pose_valid, reproj_err = estimate_head_pose(
-            lmks_px, (frame_w, frame_h), pose_config.landmark_indices,
-        )
+        tm = np.array(detection_result.facial_transformation_matrixes[0])
+        fd.transform_matrix = tm
+        yaw, pitch, roll = extract_euler_from_transform(tm)
         fd.yaw = yaw
         fd.pitch = pitch
         fd.roll = roll
-        fd.pose_valid = pose_valid
-        fd.reprojection_error = reproj_err
+        fd.pose_valid = True
+
 
     return fd
 

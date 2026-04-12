@@ -9,6 +9,7 @@ venv/
 .env
 assets/*.task
 output/
+test/output/
 *.mp4
 *.mov
 *.mkv

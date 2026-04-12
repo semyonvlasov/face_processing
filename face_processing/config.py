@@ -23,6 +23,7 @@ class DetectionConfig:
     num_faces: int = 2
     min_detection_confidence: float = 0.5
     min_presence_confidence: float = 0.5
+    use_gpu: bool = False
 
 
 @dataclass
@@ -34,7 +35,7 @@ class PoseConfig:
 class BadFrameThresholds:
     min_face_h: int = 180
     max_abs_yaw: float = 30.0
-    max_abs_pitch: float = 22.0
+    max_abs_pitch: float = 25.0
     max_abs_roll: float = 20.0
     max_delta_cx_ratio: float = 0.08
     max_delta_cy_ratio: float = 0.08
@@ -43,7 +44,6 @@ class BadFrameThresholds:
     max_delta_roll: float = 12.0
     max_face_h_ratio_deviation: float = 0.12
     min_confidence: float = 0.5
-    max_reprojection_error: float = 10.0
     min_segment_length: int = 50
     # Excessive face motion: rolling window
     motion_window_frames: int = 25

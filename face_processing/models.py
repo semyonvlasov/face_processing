@@ -29,7 +29,6 @@ class FrameData:
     pitch: float = 0.0
     roll: float = 0.0
     pose_valid: bool = False
-    reprojection_error: float = float("inf")
 
     # Optional MediaPipe transformation matrix
     transform_matrix: np.ndarray | None = None

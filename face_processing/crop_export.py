@@ -7,7 +7,6 @@ import cv2
 import numpy as np
 
 from face_processing.config import ExportConfig
-from face_processing.face_model_3d import LANDMARK_INDICES
 from face_processing.models import FrameData, Segment
 
 logger = logging.getLogger(__name__)
@@ -15,22 +14,17 @@ logger = logging.getLogger(__name__)
 
 def compute_output_size(
     segment: Segment,
-    video_path: str,
     frame_w: int,
     frame_h: int,
 ) -> int:
-    """Compute S = min(face_h) measured on roll-corrected frames.
+    """Compute S = min(face_h) measured on roll-corrected landmarks.
 
-    This is a first pass over the segment's frames: read each frame,
-    rotate by -roll, re-measure face height from rotated landmarks.
+    No video I/O — rotates landmarks mathematically using existing pose data.
     """
-    cap = cv2.VideoCapture(video_path)
     min_face_h = float("inf")
 
     for fd in segment.frame_data:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, fd.frame_idx)
-        ret, _ = cap.read()
-        if not ret or fd.landmarks is None:
+        if fd.landmarks is None:
             continue
 
         lmks_px = fd.landmarks.copy()
@@ -45,10 +39,7 @@ def compute_output_size(
         if face_h_rot < min_face_h:
             min_face_h = face_h_rot
 
-    cap.release()
-
     S = max(1, int(min_face_h))
-    # Ensure S is even (H.264 requirement)
     if S % 2 != 0:
         S -= 1
     return S
@@ -62,6 +53,7 @@ def export_segment(
     frame_h: int,
     output_size: int,
     config: ExportConfig | None = None,
+    source_video_path: str | None = None,
 ) -> str:
     """Export a segment as a square face video.
 
@@ -80,6 +72,10 @@ def export_segment(
         segment.segment_id, segment.start_frame, segment.end_frame, S, S, output_path,
     )
 
+    # Audio timing from segment boundaries
+    start_sec = segment.start_frame / config.fps
+    duration_sec = segment.length / config.fps
+
     cmd = [
         "ffmpeg", "-y",
         "-f", "rawvideo",
@@ -87,37 +83,61 @@ def export_segment(
         "-s", f"{S}x{S}",
         "-r", str(config.fps),
         "-i", "pipe:0",
-        "-c:v", config.codec,
-        "-b:v", config.bitrate,
-        "-pix_fmt", config.pixel_format,
-        "-an",
-        output_path,
     ]
+    if source_video_path:
+        cmd += [
+            "-ss", f"{start_sec:.4f}",
+            "-t", f"{duration_sec:.4f}",
+            "-i", source_video_path,
+            "-c:v", config.codec,
+            "-b:v", config.bitrate,
+            "-pix_fmt", config.pixel_format,
+            "-c:a", "aac", "-b:a", "128k",
+            "-map", "0:v:0", "-map", "1:a:0?",
+            "-shortest",
+        ]
+    else:
+        cmd += [
+            "-c:v", config.codec,
+            "-b:v", config.bitrate,
+            "-pix_fmt", config.pixel_format,
+            "-an",
+        ]
+    cmd.append(output_path)
     proc = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
 
     cap = cv2.VideoCapture(video_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, segment.start_frame)
 
-    for fd in segment.frame_data:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, fd.frame_idx)
-        ret, frame_bgr = cap.read()
-        if not ret or fd.landmarks is None:
-            # Write black frame as fallback
-            black = np.zeros((S, S, 3), dtype=np.uint8)
-            proc.stdin.write(black.tobytes())
-            continue
+    try:
+        for fd in segment.frame_data:
+            ret, frame_bgr = cap.read()
+            if not ret or fd.landmarks is None:
+                black = np.zeros((S, S, 3), dtype=np.uint8)
+                proc.stdin.write(black.tobytes())
+                continue
 
-        roll = fd.roll if fd.pose_valid else 0.0
-        cropped = _crop_face_rotated(
-            frame_bgr, fd, roll, frame_w, frame_h, S, config.mode,
-        )
-        proc.stdin.write(cropped.tobytes())
+            roll = fd.roll if fd.pose_valid else 0.0
+            cropped = _crop_face_rotated(
+                frame_bgr, fd, roll, frame_w, frame_h, S, config.mode,
+            )
+            assert cropped.shape == (S, S, 3), f"Bad crop shape {cropped.shape}, expected ({S},{S},3)"
+            proc.stdin.write(cropped.tobytes())
+    except BrokenPipeError:
+        pass
+    finally:
+        cap.release()
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
 
-    cap.release()
-    proc.stdin.close()
-    _, stderr = proc.communicate()
+    proc.wait()
+    stderr = proc.stderr.read() if proc.stderr else b""
     if proc.returncode != 0:
+        logger.error("ffmpeg stderr: %s", stderr.decode())
         raise RuntimeError(
             f"ffmpeg export failed (code {proc.returncode}):\n{stderr.decode()}"
         )
