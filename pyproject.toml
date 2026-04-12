@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "face-processing"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mediapipe>=0.10.9",
+    "opencv-python>=4.8",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+log = ["pandas", "pyarrow"]
+
+[project.scripts]
+face-processing = "face_processing.cli:main"
