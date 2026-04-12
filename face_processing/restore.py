@@ -111,16 +111,10 @@ def restore_segment(
 
             row = frame_rows[i]
             roll = row["roll"]
-            cx = row["cx"]
-            cy = row["cy"]
-            face_w_orig = row["face_w"]
 
-            # Resize face crop back to the crop dimensions before stretch
+            # Un-stretch face crop to the dimensions it had before stretch
             if export_mode == "stretch_to_square":
-                # Was: crop (face_w x S) then stretched to (S x S)
-                # Reverse: un-stretch from (S x S) to (face_w_rot x S)
-                face_w_rot = _estimate_rotated_face_w(row, frame_w, frame_h, roll)
-                crop_w = max(1, int(round(face_w_rot)))
+                crop_w = max(1, int(round(row["crop_w_rot"])))
                 crop_h = S
                 unstretched = cv2.resize(face_crop, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
             else:
@@ -128,15 +122,12 @@ def restore_segment(
                 crop_w = S
                 crop_h = S
 
-            # Compute rotated face center (same math as crop_export)
-            cx_rot, cy_rot = _rotate_point(cx, cy, -roll, frame_w, frame_h)
-
-            # Paste into rotated frame
-            rotated_frame = _rotate_frame(frame_orig, -roll, frame_w, frame_h)
-            _paste_crop(rotated_frame, unstretched, cx_rot, cy_rot, crop_w, crop_h)
-
-            # Un-rotate back to original orientation
-            restored = _rotate_frame(rotated_frame, roll, frame_w, frame_h)
+            # Warp face patch directly into original frame using inverse
+            # of the export transform (no double-rotation of the full frame).
+            restored = _warp_face_into_frame(
+                frame_orig, unstretched, row, roll,
+                crop_w, crop_h, frame_w, frame_h,
+            )
 
             proc.stdin.write(restored.tobytes())
     except BrokenPipeError:
@@ -177,88 +168,103 @@ def _load_frame_rows(
                 "cy": float(r["cy"]) if r["cy"] else 0.0,
                 "face_w": float(r["face_w"]) if r["face_w"] else 0.0,
                 "face_h": float(r["face_h"]) if r["face_h"] else 0.0,
-                "bbox_x1": int(r["bbox_x1"]) if r["bbox_x1"] else 0,
-                "bbox_y1": int(r["bbox_y1"]) if r["bbox_y1"] else 0,
-                "bbox_x2": int(r["bbox_x2"]) if r["bbox_x2"] else 0,
-                "bbox_y2": int(r["bbox_y2"]) if r["bbox_y2"] else 0,
+                "crop_cx_rot": float(r["crop_cx_rot"]) if r.get("crop_cx_rot") else 0.0,
+                "crop_cy_rot": float(r["crop_cy_rot"]) if r.get("crop_cy_rot") else 0.0,
+                "crop_w_rot": float(r["crop_w_rot"]) if r.get("crop_w_rot") else 0.0,
             })
     return rows
 
 
-def _estimate_rotated_face_w(
-    row: dict, frame_w: int, frame_h: int, roll: float,
-) -> float:
-    """Estimate face width in the rotated frame from bbox corners."""
-    x1, y1 = row["bbox_x1"], row["bbox_y1"]
-    x2, y2 = row["bbox_x2"], row["bbox_y2"]
-    # Rotate all 4 corners of the bbox
-    corners = np.array([
-        [x1, y1], [x2, y1], [x2, y2], [x1, y2],
+
+
+def _warp_face_into_frame(
+    frame_orig: np.ndarray,
+    face_patch: np.ndarray,
+    row: dict,
+    roll: float,
+    crop_w: int,
+    crop_h: int,
+    frame_w: int,
+    frame_h: int,
+) -> np.ndarray:
+    """Warp face patch back into the original (non-rotated) frame.
+
+    During export the pipeline did:
+      1. Rotate frame by -roll around frame center
+      2. Crop a (crop_w x crop_h) rect centered at (cx_rot, cy_rot)
+
+    To reverse with a single affine warp of just the face patch:
+      - Map 3 corners of the face patch to where they sit in the
+        original frame by applying the INVERSE rotation (+roll).
+    """
+    fc = frame_w / 2.0, frame_h / 2.0
+
+    # Exact face center in rotated frame (saved during export)
+    cx_rot = row["crop_cx_rot"]
+    cy_rot = row["crop_cy_rot"]
+
+    # 3 corners of the face patch in patch-local coords
+    #   top-left, top-right, bottom-left
+    src_pts = np.array([
+        [0, 0],
+        [crop_w, 0],
+        [0, crop_h],
+    ], dtype=np.float32)
+
+    # Same 3 corners in the rotated frame (centered on cx_rot, cy_rot)
+    half_w = crop_w / 2.0
+    half_h = crop_h / 2.0
+    dst_rot = np.array([
+        [cx_rot - half_w, cy_rot - half_h],
+        [cx_rot + half_w, cy_rot - half_h],
+        [cx_rot - half_w, cy_rot + half_h],
     ], dtype=np.float64)
-    rotated = _rotate_points(corners, -roll, frame_w, frame_h)
-    return float(np.max(rotated[:, 0]) - np.min(rotated[:, 0]))
 
+    # Now rotate these points BACK by +roll to get positions in the original frame
+    M_inv = cv2.getRotationMatrix2D(fc, roll, 1.0)
+    ones = np.ones((3, 1), dtype=np.float64)
+    dst_rot_h = np.hstack([dst_rot, ones])
+    dst_orig = (M_inv @ dst_rot_h.T).T  # (3, 2)
 
-def _rotate_point(
-    x: float, y: float, angle_deg: float, frame_w: int, frame_h: int,
-) -> tuple[float, float]:
-    cx, cy = frame_w / 2.0, frame_h / 2.0
-    M = cv2.getRotationMatrix2D((cx, cy), angle_deg, 1.0)
-    pt = np.array([[x, y, 1.0]])
-    rotated = (M @ pt.T).T
-    return float(rotated[0, 0]), float(rotated[0, 1])
+    # Affine: patch coords → original frame coords
+    M_warp = cv2.getAffineTransform(src_pts, dst_orig.astype(np.float32))
 
-
-def _rotate_points(
-    pts: np.ndarray, angle_deg: float, frame_w: int, frame_h: int,
-) -> np.ndarray:
-    cx, cy = frame_w / 2.0, frame_h / 2.0
-    M = cv2.getRotationMatrix2D((cx, cy), angle_deg, 1.0)
-    ones = np.ones((pts.shape[0], 1), dtype=np.float64)
-    pts_h = np.hstack([pts, ones])
-    return (M @ pts_h.T).T
-
-
-def _rotate_frame(
-    frame: np.ndarray, angle_deg: float, frame_w: int, frame_h: int,
-) -> np.ndarray:
-    center = (frame_w / 2.0, frame_h / 2.0)
-    M = cv2.getRotationMatrix2D(center, angle_deg, 1.0)
-    return cv2.warpAffine(
-        frame, M, (frame_w, frame_h),
+    # Warp face patch into full-frame size
+    warped_face = cv2.warpAffine(
+        face_patch, M_warp, (frame_w, frame_h),
         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0),
     )
 
+    # Feathered mask: solid white with smooth fade at edges
+    feather = max(1, int(min(crop_w, crop_h) * 0.08))
+    mask_patch = _make_feather_mask(crop_w, crop_h, feather)
+    mask_warped = cv2.warpAffine(
+        mask_patch, M_warp, (frame_w, frame_h),
+        borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
+    )
 
-def _paste_crop(
-    canvas: np.ndarray,
-    crop: np.ndarray,
-    cx: float,
-    cy: float,
-    crop_w: int,
-    crop_h: int,
-) -> None:
-    """Paste crop centered at (cx, cy) onto canvas (mutates in place)."""
-    h_canvas, w_canvas = canvas.shape[:2]
-    x1 = int(round(cx - crop_w / 2.0))
-    y1 = int(round(cy - crop_h / 2.0))
-    x2 = x1 + crop_w
-    y2 = y1 + crop_h
+    # Alpha-blend: result = orig * (1 - alpha) + face * alpha
+    alpha = mask_warped[:, :, np.newaxis].astype(np.float32) / 255.0
+    result = (
+        frame_orig.astype(np.float32) * (1.0 - alpha)
+        + warped_face.astype(np.float32) * alpha
+    )
+    return result.clip(0, 255).astype(np.uint8)
 
-    # Source region in crop
-    sx1 = max(0, -x1)
-    sy1 = max(0, -y1)
-    sx2 = crop_w - max(0, x2 - w_canvas)
-    sy2 = crop_h - max(0, y2 - h_canvas)
 
-    # Dest region in canvas
-    dx1 = max(0, x1)
-    dy1 = max(0, y1)
-    dx2 = min(w_canvas, x2)
-    dy2 = min(h_canvas, y2)
+def _make_feather_mask(w: int, h: int, feather: int) -> np.ndarray:
+    """Create a single-channel mask: 255 inside, smooth linear fade at edges."""
+    mask = np.ones((h, w), dtype=np.float32) * 255.0
+    for i in range(feather):
+        t = (i + 1) / (feather + 1)
+        val = t * 255.0
+        mask[i, :] = np.minimum(mask[i, :], val)        # top
+        mask[h - 1 - i, :] = np.minimum(mask[h - 1 - i, :], val)  # bottom
+        mask[:, i] = np.minimum(mask[:, i], val)         # left
+        mask[:, w - 1 - i] = np.minimum(mask[:, w - 1 - i], val)  # right
+    return mask.astype(np.uint8)
 
-    if dx1 < dx2 and dy1 < dy2 and sx1 < sx2 and sy1 < sy2:
-        canvas[dy1:dy2, dx1:dx2] = crop[sy1:sy2, sx1:sx2]
+
 
 
 def main() -> None:

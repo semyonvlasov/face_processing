@@ -33,6 +33,11 @@ class FrameData:
     # Optional MediaPipe transformation matrix
     transform_matrix: np.ndarray | None = None
 
+    # Rotated crop geometry (filled during export)
+    crop_cx_rot: float | None = None
+    crop_cy_rot: float | None = None
+    crop_w_rot: float | None = None
+
     # Inter-frame deltas (None for first frame or when previous had no face)
     delta_cx: float | None = None
     delta_cy: float | None = None

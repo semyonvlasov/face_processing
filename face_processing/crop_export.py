@@ -178,6 +178,11 @@ def _crop_face_rotated(
     face_w_rot = float(np.max(xs) - np.min(xs))
     face_h_rot = float(np.max(ys) - np.min(ys))
 
+    # Save crop geometry for restore
+    fd.crop_cx_rot = cx_rot
+    fd.crop_cy_rot = cy_rot
+    fd.crop_w_rot = face_w_rot
+
     if mode == "stretch_to_square":
         crop = _extract_crop_stretch(rotated, cx_rot, cy_rot, face_w_rot, S, frame_w, frame_h)
     else:
