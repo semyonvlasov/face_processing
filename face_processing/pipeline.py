@@ -63,7 +63,9 @@ def process_video(input_path: str, config: PipelineConfig | None = None) -> Vide
     # --- Stage 4: Segment ---
     logger.info("=== Stage 4: Segmenting ===")
     exportable, dropped = split_into_segments(
-        frame_data, config.bad_frame.min_segment_length,
+        frame_data,
+        config.bad_frame.min_segment_length,
+        config.bad_frame.max_segment_length,
     )
     logger.info(
         "Found %d exportable segments, %d dropped (too short)",

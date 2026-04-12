@@ -21,8 +21,8 @@ class DetectionConfig:
         "face_landmarker_v2_with_blendshapes.task",
     )
     num_faces: int = 2
-    min_detection_confidence: float = 0.5
-    min_presence_confidence: float = 0.5
+    min_detection_confidence: float = 0.85
+    min_presence_confidence: float = 0.85
     use_gpu: bool = False
 
 
@@ -45,6 +45,7 @@ class BadFrameThresholds:
     max_face_h_ratio_deviation: float = 0.12
     min_confidence: float = 0.5
     min_segment_length: int = 50
+    max_segment_length: int = 200  # 8 sec at 25fps
     # Excessive face motion: rolling window
     motion_window_frames: int = 25
     max_cumulative_motion_ratio: float = 0.25

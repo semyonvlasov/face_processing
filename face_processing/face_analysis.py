@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+from collections import deque
 
 import cv2
 import mediapipe as mp
@@ -13,6 +15,8 @@ from face_processing.face_model_3d import extract_euler_from_transform
 from face_processing.models import FrameData
 
 logger = logging.getLogger(__name__)
+
+_SENTINEL = None  # signals end of stream
 
 
 def _create_detector(config: DetectionConfig) -> vision.FaceLandmarker:
@@ -61,14 +65,51 @@ def analyze_frames(
         total_frames, frame_w, frame_h, video_path,
     )
 
+    # --- Producer/consumer with prefetch queue ---
+    queue_size = 8
+    queue: deque[tuple[int, np.ndarray] | None] = deque()
+    lock = threading.Lock()
+    not_empty = threading.Condition(lock)
+    not_full = threading.Condition(lock)
+    read_error: list[Exception] = []
+
+    def _reader():
+        """Decode frames in a background thread."""
+        idx = 0
+        try:
+            while True:
+                ret, frame_bgr = cap.read()
+                if not ret:
+                    break
+                with not_full:
+                    while len(queue) >= queue_size:
+                        not_full.wait()
+                    queue.append((idx, frame_bgr))
+                    not_empty.notify()
+                idx += 1
+        except Exception as e:
+            read_error.append(e)
+        finally:
+            with not_full:
+                queue.append(_SENTINEL)
+                not_empty.notify()
+
+    reader_thread = threading.Thread(target=_reader, daemon=True)
+    reader_thread.start()
+
     results: list[FrameData] = []
-    frame_idx = 0
 
     while True:
-        ret, frame_bgr = cap.read()
-        if not ret:
+        with not_empty:
+            while len(queue) == 0:
+                not_empty.wait()
+            item = queue.popleft()
+            not_full.notify()
+
+        if item is _SENTINEL:
             break
 
+        frame_idx, frame_bgr = item
         fd = _process_frame(
             frame_bgr, frame_idx, frame_w, frame_h, frame_area,
             detector, detection_config.use_gpu,
@@ -82,10 +123,14 @@ def analyze_frames(
             frame_idx, fd.num_faces, fd.face_w, fd.face_h,
             fd.yaw, fd.pitch, fd.roll, fd.confidence,
         )
-        frame_idx += 1
 
+    reader_thread.join()
     cap.release()
     detector.close()
+
+    if read_error:
+        raise read_error[0]
+
     logger.info("Analysis complete: %d frames processed", len(results))
     return results
 
@@ -162,23 +207,15 @@ def _process_frame(
         fd.roll = roll
         fd.pose_valid = True
 
-
     return fd
 
 
 def _detection_confidence(result, face_idx: int) -> float:
     """Extract detection confidence for a face from FaceLandmarkerResult."""
-    # MediaPipe FaceLandmarkerResult doesn't directly expose a single
-    # confidence score. We use the face_blendshapes or fall back to 1.0.
-    # The actual confidence comes from the internal detection — we can
-    # approximate using the landmark presence.
-    # For the Tasks API, we rely on min_detection_confidence filtering.
-    # Return 1.0 as baseline; the reprojection error is our real quality signal.
     try:
         if hasattr(result, 'face_blendshapes') and result.face_blendshapes:
             bs = result.face_blendshapes[face_idx]
             if len(bs) > 0:
-                # The first blendshape is "_neutral" with a score 0..1
                 return float(bs[0].score)
     except (IndexError, AttributeError):
         pass
