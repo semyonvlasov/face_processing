@@ -36,7 +36,7 @@ class PoseConfig:
 
 @dataclass
 class BadFrameThresholds:
-    min_face_h: int = 180
+    min_face_h: int = 100
     max_abs_yaw: float = 30.0
     max_abs_pitch: float = 25.0
     max_abs_roll: float = 20.0

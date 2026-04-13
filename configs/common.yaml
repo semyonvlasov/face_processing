@@ -42,7 +42,7 @@ face_processing:
     use_gpu: false
 
   bad_frame:
-    min_face_h: 180
+    min_face_h: 100
     max_abs_yaw: 30.0
     max_abs_pitch: 25.0
     max_abs_roll: 20.0
