@@ -113,7 +113,7 @@ def resolve_dataset_kind(requested: str, source_archive: str, input_dir: Path) -
     return "hdtf"
 
 
-def load_resume_progress(manifest_path: Path, resume_state_path: Path) -> tuple[dict, int, int]:
+def load_resume_progress(manifest_path: Path, resume_state_path: Path) -> tuple[dict, int, int, set[int]]:
     counters = {
         "ok": 0,
         "skip": 0,
@@ -125,6 +125,7 @@ def load_resume_progress(manifest_path: Path, resume_state_path: Path) -> tuple[
     }
     total_segments = 0
     latest_manifest_index = 0
+    processed_video_indexes: set[int] = set()
 
     if manifest_path.exists():
         with manifest_path.open("r", encoding="utf-8") as handle:
@@ -145,7 +146,10 @@ def load_resume_progress(manifest_path: Path, resume_state_path: Path) -> tuple[
                     counters[tier] += 1
                 total_segments += 1
                 try:
-                    latest_manifest_index = max(latest_manifest_index, int(payload.get("index") or 0))
+                    video_index = int(payload.get("index") or 0)
+                    if video_index > 0:
+                        processed_video_indexes.add(video_index)
+                        latest_manifest_index = max(latest_manifest_index, video_index)
                 except (TypeError, ValueError):
                     pass
 
@@ -157,8 +161,18 @@ def load_resume_progress(manifest_path: Path, resume_state_path: Path) -> tuple[
         except (TypeError, ValueError):
             next_video_index = 0
 
-    next_video_index = max(next_video_index, latest_manifest_index)
-    return counters, total_segments, next_video_index
+    if processed_video_indexes:
+        missing_before_latest = [
+            idx for idx in range(1, latest_manifest_index + 1)
+            if idx not in processed_video_indexes
+        ]
+        if missing_before_latest:
+            next_video_index = min(missing_before_latest) - 1
+        else:
+            next_video_index = max(next_video_index, latest_manifest_index)
+    else:
+        next_video_index = 0
+    return counters, total_segments, next_video_index, processed_video_indexes
 
 
 def _apply_mapping(target: object, mapping: dict[str, Any], section_name: str) -> None:
@@ -528,7 +542,10 @@ def main() -> int:
         get_mapping(config, "process", default={}).get("gpu_processing_clip_max_length_sec", 30.0)
     )
 
-    counters, total_segments, start_video_index = load_resume_progress(manifest_path, resume_state_path)
+    counters, total_segments, start_video_index, processed_video_indexes = load_resume_progress(
+        manifest_path,
+        resume_state_path,
+    )
     total_processed_source_frames = 0
     videos = list(iter_videos(input_dir))
     start_video_index = max(0, min(start_video_index, len(videos)))
@@ -570,6 +587,9 @@ def main() -> int:
         log("[FaceclipExport] resume_at_end=true; no source videos left to export")
 
     for idx, video_path in enumerate(videos[start_video_index:], start=start_video_index + 1):
+        if idx in processed_video_indexes:
+            continue
+
         total_source_frames = 0
         source_fps = 0.0
         duration_sec = 0.0
@@ -676,6 +696,7 @@ def main() -> int:
                 "last_completed_source_video": video_path.name,
             },
         )
+        processed_video_indexes.add(idx)
 
     summary = {
         "ts": timestamp(),
