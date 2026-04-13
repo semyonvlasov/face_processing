@@ -4,7 +4,7 @@ build-backend = "setuptools.backends._legacy:_Backend"
 
 [project]
 name = "face-processing"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.10"
 dependencies = [
     "mediapipe>=0.10.9",
@@ -15,6 +15,11 @@ dependencies = [
 
 [project.optional-dependencies]
 log = ["pandas", "pyarrow"]
+batch = ["pyyaml>=6.0"]
+audio = ["librosa>=0.10", "scipy>=1.11", "numba"]
 
 [project.scripts]
 face-processing = "face_processing.cli:main"
+face-batch-gdrive = "batch.gdrive_processor:main"
+face-batch-local = "batch.local_processor:main"
+face-batch-export = "batch.export_faceclip_batch:main"

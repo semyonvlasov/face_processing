@@ -23,11 +23,22 @@ def compute_segment_metrics(
     cxs = np.array([fd.cx for fd in fds])
     cys = np.array([fd.cy for fd in fds])
 
+    eye_dists = np.array([fd.eye_dist for fd in fds if fd.eye_dist and fd.eye_dist > 0], dtype=np.float64)
+    eye_mouth_dists = np.array(
+        [fd.eye_mouth_dist for fd in fds if fd.eye_mouth_dist and fd.eye_mouth_dist > 0],
+        dtype=np.float64,
+    )
+    scale_dev = np.array(
+        [fd.scale_deviation_ratio for fd in fds if fd.scale_deviation_ratio is not None],
+        dtype=np.float64,
+    )
+
     mean_face_h = float(np.mean(face_hs)) if n > 0 else 1.0
     std_face_h = float(np.std(face_hs)) if n > 1 else 0.0
 
     # Jump ratio: frames with frame_jumps reason / total
     jump_count = sum(1 for fd in fds if "frame_jumps" in fd.bad_reasons)
+    scale_outlier_count = sum(1 for fd in fds if (fd.scale_deviation_ratio or 0.0) > 0.0)
     # Missing ratio: frames with no face / total
     missing_count = sum(1 for fd in fds if not fd.face_detected)
     # Low confidence ratio
@@ -45,6 +56,9 @@ def compute_segment_metrics(
         face_size_std_ratio=std_face_h / mean_face_h if mean_face_h > 0 else 0.0,
         std_cx=float(np.std(cxs)),
         std_cy=float(np.std(cys)),
+        eye_dist_std_ratio=float(np.std(eye_dists) / np.mean(eye_dists)) if eye_dists.size > 1 else 0.0,
+        eye_mouth_std_ratio=float(np.std(eye_mouth_dists) / np.mean(eye_mouth_dists)) if eye_mouth_dists.size > 1 else 0.0,
+        scale_outlier_ratio=scale_outlier_count / n,
         jump_ratio=jump_count / n,
         missing_ratio=missing_count / n,
         low_conf_ratio=low_conf_count / n,
@@ -75,6 +89,9 @@ def _meets_confident(m: SegmentMetrics, t: RankingThresholds, s: int) -> bool:
         and m.face_size_std_ratio <= t.conf_face_size_std_ratio
         and m.std_cx <= t.conf_std_cx_ratio * s
         and m.std_cy <= t.conf_std_cy_ratio * s
+        and m.eye_dist_std_ratio <= t.conf_eye_dist_std_ratio
+        and m.eye_mouth_std_ratio <= t.conf_eye_mouth_std_ratio
+        and m.scale_outlier_ratio <= t.conf_scale_outlier_ratio
         and m.jump_ratio <= t.conf_jump_ratio
         and m.low_conf_ratio <= t.conf_low_conf_ratio
     )
@@ -91,6 +108,9 @@ def _meets_medium(m: SegmentMetrics, t: RankingThresholds, s: int) -> bool:
         and m.face_size_std_ratio <= t.med_face_size_std_ratio
         and m.std_cx <= t.med_std_cx_ratio * s
         and m.std_cy <= t.med_std_cy_ratio * s
+        and m.eye_dist_std_ratio <= t.med_eye_dist_std_ratio
+        and m.eye_mouth_std_ratio <= t.med_eye_mouth_std_ratio
+        and m.scale_outlier_ratio <= t.med_scale_outlier_ratio
         and m.jump_ratio <= t.med_jump_ratio
         and m.low_conf_ratio <= t.med_low_conf_ratio
     )

@@ -11,6 +11,9 @@ class NormalizationConfig:
     bitrate: str = "20M"
     codec: str = "libx264"
     pixel_format: str = "yuv420p"
+    ffmpeg_bin: str = "ffmpeg"
+    ffmpeg_threads: int = 0
+    ffmpeg_timeout: int = 180
 
 
 @dataclass
@@ -63,6 +66,9 @@ class RankingThresholds:
     conf_face_size_std_ratio: float = 0.08
     conf_std_cx_ratio: float = 0.04
     conf_std_cy_ratio: float = 0.04
+    conf_eye_dist_std_ratio: float = 0.03
+    conf_eye_mouth_std_ratio: float = 0.03
+    conf_scale_outlier_ratio: float = 0.02
     conf_jump_ratio: float = 0.02
     conf_low_conf_ratio: float = 0.02
     # medium
@@ -75,8 +81,18 @@ class RankingThresholds:
     med_face_size_std_ratio: float = 0.15
     med_std_cx_ratio: float = 0.08
     med_std_cy_ratio: float = 0.08
+    med_eye_dist_std_ratio: float = 0.06
+    med_eye_mouth_std_ratio: float = 0.06
+    med_scale_outlier_ratio: float = 0.05
     med_jump_ratio: float = 0.08
     med_low_conf_ratio: float = 0.08
+
+
+@dataclass
+class StabilizationConfig:
+    enabled: bool = False
+    window: int = 5
+    scale_outlier_threshold_ratio: float = 0.04
 
 
 @dataclass
@@ -86,6 +102,9 @@ class ExportConfig:
     bitrate: str = "1M"
     codec: str = "libx264"
     pixel_format: str = "yuv420p"
+    ffmpeg_bin: str = "ffmpeg"
+    ffmpeg_threads: int = 0
+    ffmpeg_timeout: int = 180
 
 
 @dataclass
@@ -95,6 +114,7 @@ class PipelineConfig:
     pose: PoseConfig = field(default_factory=PoseConfig)
     bad_frame: BadFrameThresholds = field(default_factory=BadFrameThresholds)
     ranking: RankingThresholds = field(default_factory=RankingThresholds)
+    stabilization: StabilizationConfig = field(default_factory=StabilizationConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
     save_frame_log: bool = False
     keep_normalized: bool = False
@@ -111,6 +131,7 @@ class PipelineConfig:
             "pose": PoseConfig,
             "bad_frame": BadFrameThresholds,
             "ranking": RankingThresholds,
+            "stabilization": StabilizationConfig,
             "export": ExportConfig,
         }
         for key, cls in _nested.items():

@@ -1,0 +1,5 @@
+extends: gdrive.yaml
+stage: process_hdtf_raw_from_gdrive
+
+source:
+  archive_glob: "*hdtf*.tar"

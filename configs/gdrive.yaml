@@ -1,0 +1,15 @@
+# Common defaults for the shared raw-Drive -> lazy faceclips processor.
+
+extends: common.yaml
+stage: process_raw_archives_to_lazy_faceclips_gdrive
+
+paths:
+  processing_folder: data/process/raw_faceclips_cycle
+  manifest_path: data/process/raw_faceclips_cycle/archive_manifest.jsonl
+
+source:
+  archive_glob: "*.tar"
+
+process:
+  max_archives: 0
+  keep_failed_artifacts: false

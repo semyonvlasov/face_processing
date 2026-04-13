@@ -37,6 +37,14 @@ class FrameData:
     crop_cx_rot: float | None = None
     crop_cy_rot: float | None = None
     crop_w_rot: float | None = None
+    crop_h_rot: float | None = None
+    stable_crop_cx_rot: float | None = None
+    stable_crop_cy_rot: float | None = None
+    stable_crop_w_rot: float | None = None
+    stable_crop_h_rot: float | None = None
+    eye_dist: float | None = None
+    eye_mouth_dist: float | None = None
+    scale_deviation_ratio: float | None = None
 
     # Inter-frame deltas (None for first frame or when previous had no face)
     delta_cx: float | None = None
@@ -68,6 +76,9 @@ class SegmentMetrics:
     face_size_std_ratio: float = 0.0
     std_cx: float = 0.0
     std_cy: float = 0.0
+    eye_dist_std_ratio: float = 0.0
+    eye_mouth_std_ratio: float = 0.0
+    scale_outlier_ratio: float = 0.0
     jump_ratio: float = 0.0
     missing_ratio: float = 0.0
     low_conf_ratio: float = 0.0
@@ -85,6 +96,9 @@ class SegmentMetrics:
             "face_size_std_ratio": round(self.face_size_std_ratio, 4),
             "std_cx": round(self.std_cx, 2),
             "std_cy": round(self.std_cy, 2),
+            "eye_dist_std_ratio": round(self.eye_dist_std_ratio, 4),
+            "eye_mouth_std_ratio": round(self.eye_mouth_std_ratio, 4),
+            "scale_outlier_ratio": round(self.scale_outlier_ratio, 4),
             "jump_ratio": round(self.jump_ratio, 4),
             "missing_ratio": round(self.missing_ratio, 4),
             "low_conf_ratio": round(self.low_conf_ratio, 4),
