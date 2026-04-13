@@ -29,12 +29,12 @@ the existing archive-level orchestration contract:
 from __future__ import annotations
 
 import argparse
+import copy
+import gc
 import json
 import os
 import shutil
-import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import fields
 from pathlib import Path
@@ -68,27 +68,6 @@ def timestamp() -> str:
 
 def log(message: str) -> None:
     print(f"{timestamp()} {message}", flush=True)
-
-
-def should_suppress_runtime_log(line: str) -> bool:
-    stripped = line.strip()
-    if not stripped:
-        return False
-    if stripped.startswith("WARNING: All log messages before absl::InitializeLog() is called"):
-        return True
-    if stripped.startswith("INFO: Created TensorFlow Lite XNNPACK delegate for CPU."):
-        return True
-    if (
-        "face_landmarker_graph.cc:" in stripped
-        and "FaceBlendshapesGraph acceleration to xnnpack by default" in stripped
-    ):
-        return True
-    if (
-        "inference_feedback_manager.cc:" in stripped
-        and "Feedback manager requires a model with a single signature inference." in stripped
-    ):
-        return True
-    return False
 
 
 def append_jsonl(path: Path, payload: dict) -> None:
@@ -454,144 +433,59 @@ def cleanup_video_artifacts(*, video_path: Path, batch_output_dir: Path, work_ro
                 pass
 
 
-def write_gpu_override_config(config_path: Path, *, use_gpu: bool) -> Path:
-    handle = tempfile.NamedTemporaryFile(
-        mode="w",
-        encoding="utf-8",
-        suffix=".yaml",
-        prefix="faceclip_export_",
-        delete=False,
-    )
-    with handle:
-        handle.write(f"extends: {config_path}\n\n")
-        handle.write("face_processing:\n")
-        handle.write("  detection:\n")
-        handle.write(f"    use_gpu: {'true' if use_gpu else 'false'}\n")
-    return Path(handle.name)
+def release_video_result_memory(result) -> None:
+    seen_frame_ids: set[int] = set()
+    frame_lists = [getattr(result, "frame_data", None)]
+    for segment in getattr(result, "segments", []):
+        frame_lists.append(getattr(segment, "frame_data", None))
+
+    for frame_list in frame_lists:
+        if not frame_list:
+            continue
+        for fd in frame_list:
+            if fd is None:
+                continue
+            frame_id = id(fd)
+            if frame_id in seen_frame_ids:
+                continue
+            seen_frame_ids.add(frame_id)
+            fd.landmarks = None
+            fd.transform_matrix = None
+            fd.bad_reasons.clear()
+        frame_list.clear()
 
 
-def run_video_worker(
-    *,
-    config_path: Path,
-    video_path: Path,
-    source_archive: str,
-    dataset_kind: str,
-    batch_output_dir: Path,
-    work_root: Path,
-    use_gpu: bool,
-) -> tuple[int, dict[str, Any] | None]:
-    cleanup_video_artifacts(video_path=video_path, batch_output_dir=batch_output_dir, work_root=work_root)
+def probe_video_stats(video_path: Path) -> tuple[int, float, float]:
+    import cv2
 
-    worker_result = work_root / f"{video_path.stem}.worker_result.json"
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open source video for stats: {video_path}")
     try:
-        worker_result.unlink()
-    except OSError:
-        pass
-
-    worker_config_path = write_gpu_override_config(config_path, use_gpu=use_gpu)
-    cmd = [
-        sys.executable,
-        str(Path(__file__).resolve()),
-        "--config",
-        str(worker_config_path),
-        "--input-dir",
-        str(video_path.parent),
-        "--output-dir",
-        str(batch_output_dir),
-        "--normalized-dir",
-        str(work_root),
-        "--source-archive",
-        source_archive,
-        "--dataset-kind",
-        dataset_kind,
-        "--worker-video-path",
-        str(video_path),
-        "--worker-result-path",
-        str(worker_result),
-    ]
-    try:
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        assert process.stdout is not None
-        for line in process.stdout:
-            line = line.rstrip()
-            if line and not should_suppress_runtime_log(line):
-                print(line, flush=True)
-        rc = process.wait()
-        payload = load_json(worker_result)
-        if isinstance(payload, dict):
-            entries = payload.get("segment_entries")
-            if isinstance(entries, list):
-                return rc, payload
-        return rc, None
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
     finally:
-        try:
-            worker_result.unlink()
-        except OSError:
-            pass
-        try:
-            worker_config_path.unlink()
-        except OSError:
-            pass
+        cap.release()
+
+    duration_sec = 0.0
+    if total_frames > 0 and fps > 0:
+        duration_sec = float(total_frames) / float(fps)
+    return total_frames, fps, duration_sec
 
 
-def worker_main(args: argparse.Namespace) -> int:
-    if not args.worker_video_path or not args.worker_result_path:
-        raise SystemExit("worker mode requires --worker-video-path and --worker-result-path")
-
-    try:
-        config_path, config = load_yaml_config(args.config)
-    except ConfigError as exc:
-        log(f"[FaceclipExport] config_error={exc}")
-        return 2
-
-    input_dir = Path(args.input_dir)
-    output_dir = Path(args.output_dir)
-    work_root = Path(args.normalized_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    work_root.mkdir(parents=True, exist_ok=True)
-
-    pipeline_cfg, _ = build_face_processing_config(config_path, config, work_root)
-    dataset_kind = resolve_dataset_kind(args.dataset_kind, args.source_archive, input_dir)
-    video_path = Path(args.worker_video_path)
-
-    try:
-        result, segment_entries = process_one_video(
-            video_path=video_path,
-            dataset_kind=dataset_kind,
-            source_archive=args.source_archive,
-            batch_output_dir=output_dir,
-            work_root=work_root,
-            pipeline_cfg=pipeline_cfg,
-        )
-    except Exception as exc:
-        segment_entries = [
-            {
-                "name": video_path.stem,
-                "status": "fail",
-                "tier": None,
-                "message": f"{video_path.stem}: unexpected_fail ({type(exc).__name__}: {exc})",
-                "source_segment_start_frame": 0,
-                "source_segment_end_frame": -1,
-                "segment_index": 1,
-                "segment_count": 1,
-            }
-        ]
-
-    write_json(
-        Path(args.worker_result_path),
-        {
-            "source_video": video_path.name,
-            "total_frames": int(result.total_frames) if "result" in locals() else 0,
-            "segment_entries": segment_entries,
-        },
-    )
-    return 0
+def should_use_gpu_for_video(
+    *,
+    base_use_gpu: bool,
+    duration_sec: float,
+    gpu_processing_clip_max_length_sec: float,
+) -> bool:
+    if not base_use_gpu:
+        return False
+    if gpu_processing_clip_max_length_sec <= 0:
+        return True
+    if duration_sec <= 0:
+        return True
+    return duration_sec <= gpu_processing_clip_max_length_sec
 
 
 def parse_args() -> argparse.Namespace:
@@ -606,16 +500,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--source-archive", default="", help="Source archive name for provenance")
     parser.add_argument("--dataset-kind", choices=["auto", "talkvid", "hdtf"], default="auto")
-    parser.add_argument("--worker-video-path", default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--worker-result-path", default=None, help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-
-    if args.worker_video_path or args.worker_result_path:
-        return worker_main(args)
 
     try:
         config_path, config = load_yaml_config(args.config)
@@ -633,8 +522,11 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     work_root.mkdir(parents=True, exist_ok=True)
 
-    pipeline_cfg, model_path = build_face_processing_config(config_path, config, work_root)
+    base_pipeline_cfg, model_path = build_face_processing_config(config_path, config, work_root)
     dataset_kind = resolve_dataset_kind(args.dataset_kind, args.source_archive, input_dir)
+    gpu_processing_clip_max_length_sec = float(
+        get_mapping(config, "process", default={}).get("gpu_processing_clip_max_length_sec", 30.0)
+    )
 
     counters, total_segments, start_video_index = load_resume_progress(manifest_path, resume_state_path)
     total_processed_source_frames = 0
@@ -649,22 +541,23 @@ def main() -> int:
     log(f"[FaceclipExport] model_path={model_path}")
     log(
         "[FaceclipExport] normalization="
-        f"fps={pipeline_cfg.normalization.fps} "
-        f"bitrate={pipeline_cfg.normalization.bitrate} "
-        f"codec={pipeline_cfg.normalization.codec}"
+        f"fps={base_pipeline_cfg.normalization.fps} "
+        f"bitrate={base_pipeline_cfg.normalization.bitrate} "
+        f"codec={base_pipeline_cfg.normalization.codec}"
     )
     log(
         "[FaceclipExport] export="
-        f"fps={pipeline_cfg.export.fps} "
-        f"bitrate={pipeline_cfg.export.bitrate} "
-        f"codec={pipeline_cfg.export.codec}"
+        f"fps={base_pipeline_cfg.export.fps} "
+        f"bitrate={base_pipeline_cfg.export.bitrate} "
+        f"codec={base_pipeline_cfg.export.codec}"
     )
     log(
         "[FaceclipExport] detection="
-        f"num_faces={pipeline_cfg.detection.num_faces} "
-        f"min_detection_confidence={pipeline_cfg.detection.min_detection_confidence} "
-        f"min_presence_confidence={pipeline_cfg.detection.min_presence_confidence} "
-        f"use_gpu={pipeline_cfg.detection.use_gpu}"
+        f"num_faces={base_pipeline_cfg.detection.num_faces} "
+        f"min_detection_confidence={base_pipeline_cfg.detection.min_detection_confidence} "
+        f"min_presence_confidence={base_pipeline_cfg.detection.min_presence_confidence} "
+        f"use_gpu={base_pipeline_cfg.detection.use_gpu} "
+        f"gpu_processing_clip_max_length_sec={gpu_processing_clip_max_length_sec:g}"
     )
     log(f"[FaceclipExport] videos={len(videos)}")
 
@@ -677,54 +570,67 @@ def main() -> int:
         log("[FaceclipExport] resume_at_end=true; no source videos left to export")
 
     for idx, video_path in enumerate(videos[start_video_index:], start=start_video_index + 1):
-        rc, worker_payload = run_video_worker(
-            config_path=config_path,
-            video_path=video_path,
-            source_archive=args.source_archive,
-            dataset_kind=dataset_kind,
-            batch_output_dir=output_dir,
-            work_root=work_root,
-            use_gpu=bool(pipeline_cfg.detection.use_gpu),
-        )
-        if rc != 0 and pipeline_cfg.detection.use_gpu:
+        total_source_frames = 0
+        source_fps = 0.0
+        duration_sec = 0.0
+        try:
+            total_source_frames, source_fps, duration_sec = probe_video_stats(video_path)
+        except Exception as exc:
             log(
-                f"[FaceclipExport] gpu_worker_failed source_video={video_path.name} rc={rc}; "
-                "retrying on CPU"
+                f"[FaceclipExport] source_video_stats_failed source_video={video_path.name} "
+                f"error={type(exc).__name__}: {exc}"
             )
-            rc, worker_payload = run_video_worker(
-                config_path=config_path,
+
+        video_use_gpu = should_use_gpu_for_video(
+            base_use_gpu=bool(base_pipeline_cfg.detection.use_gpu),
+            duration_sec=duration_sec,
+            gpu_processing_clip_max_length_sec=gpu_processing_clip_max_length_sec,
+        )
+        if base_pipeline_cfg.detection.use_gpu and not video_use_gpu:
+            log(
+                f"[FaceclipExport] gpu_gate source_video={video_path.name} "
+                f"duration_sec={duration_sec:.2f} threshold_sec={gpu_processing_clip_max_length_sec:g} "
+                "route=cpu"
+            )
+
+        cleanup_video_artifacts(video_path=video_path, batch_output_dir=output_dir, work_root=work_root)
+        pipeline_cfg = copy.deepcopy(base_pipeline_cfg)
+        pipeline_cfg.detection.use_gpu = video_use_gpu
+
+        try:
+            result, segment_entries = process_one_video(
                 video_path=video_path,
-                source_archive=args.source_archive,
                 dataset_kind=dataset_kind,
+                source_archive=args.source_archive,
                 batch_output_dir=output_dir,
                 work_root=work_root,
-                use_gpu=False,
+                pipeline_cfg=pipeline_cfg,
             )
-
-        segment_entries: list[dict] | None = None
-        total_source_frames = 0
-        if isinstance(worker_payload, dict):
-            payload_entries = worker_payload.get("segment_entries")
-            if isinstance(payload_entries, list):
-                segment_entries = payload_entries
-            try:
-                total_source_frames = int(worker_payload.get("total_frames") or 0)
-            except (TypeError, ValueError):
-                total_source_frames = 0
-
-        if segment_entries is None:
+            total_source_frames = int(result.total_frames)
+            release_video_result_memory(result)
+        except Exception as exc:
             segment_entries = [
                 {
                     "name": video_path.stem,
                     "status": "fail",
                     "tier": None,
-                    "message": f"{video_path.stem}: worker_failed (rc={rc})",
+                    "message": f"{video_path.stem}: unexpected_fail ({type(exc).__name__}: {exc})",
                     "source_segment_start_frame": 0,
                     "source_segment_end_frame": -1,
                     "segment_index": 1,
                     "segment_count": 1,
                 }
             ]
+            cleanup_video_artifacts(
+                video_path=video_path,
+                batch_output_dir=output_dir,
+                work_root=work_root,
+            )
+        finally:
+            gc.collect()
+
+        if total_source_frames <= 0 and source_fps > 0 and duration_sec > 0:
+            total_source_frames = int(round(source_fps * duration_sec))
 
         total_segments += len(segment_entries)
         for entry in segment_entries:
@@ -781,10 +687,10 @@ def main() -> int:
         "source_archive": args.source_archive,
         "dataset_kind": dataset_kind,
         "model_path": str(model_path),
-        "normalization_codec": pipeline_cfg.normalization.codec,
-        "normalization_bitrate": pipeline_cfg.normalization.bitrate,
-        "export_codec": pipeline_cfg.export.codec,
-        "export_bitrate": pipeline_cfg.export.bitrate,
+        "normalization_codec": base_pipeline_cfg.normalization.codec,
+        "normalization_bitrate": base_pipeline_cfg.normalization.bitrate,
+        "export_codec": base_pipeline_cfg.export.codec,
+        "export_bitrate": base_pipeline_cfg.export.bitrate,
         "total_videos": len(videos),
         "total_segments": total_segments,
         "processed_source_frames": total_processed_source_frames,

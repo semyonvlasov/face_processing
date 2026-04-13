@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import atexit
+import contextlib
 import logging
+import os
+import sys
 import threading
 from collections import deque
 
@@ -17,6 +21,29 @@ from face_processing.models import FrameData
 logger = logging.getLogger(__name__)
 
 _SENTINEL = None  # signals end of stream
+_DETECTOR_CACHE: dict[tuple[str, int, float, float, bool], vision.FaceLandmarker] = {}
+
+
+def _detector_cache_key(config: DetectionConfig) -> tuple[str, int, float, float, bool]:
+    return (
+        config.model_path,
+        int(config.num_faces),
+        float(config.min_detection_confidence),
+        float(config.min_presence_confidence),
+        bool(config.use_gpu),
+    )
+
+
+def _close_cached_detectors() -> None:
+    for detector in _DETECTOR_CACHE.values():
+        try:
+            detector.close()
+        except Exception:
+            pass
+    _DETECTOR_CACHE.clear()
+
+
+atexit.register(_close_cached_detectors)
 
 
 def _create_detector(config: DetectionConfig) -> vision.FaceLandmarker:
@@ -40,7 +67,31 @@ def _create_detector(config: DetectionConfig) -> vision.FaceLandmarker:
         min_face_detection_confidence=config.min_detection_confidence,
         min_face_presence_confidence=config.min_presence_confidence,
     )
-    return vision.FaceLandmarker.create_from_options(options)
+    with _suppress_native_stderr():
+        return vision.FaceLandmarker.create_from_options(options)
+
+
+@contextlib.contextmanager
+def _suppress_native_stderr():
+    stderr_fd = sys.stderr.fileno()
+    saved_stderr_fd = os.dup(stderr_fd)
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull_fd, stderr_fd)
+        yield
+    finally:
+        os.dup2(saved_stderr_fd, stderr_fd)
+        os.close(devnull_fd)
+        os.close(saved_stderr_fd)
+
+
+def _get_cached_detector(config: DetectionConfig) -> vision.FaceLandmarker:
+    key = _detector_cache_key(config)
+    detector = _DETECTOR_CACHE.get(key)
+    if detector is None:
+        detector = _create_detector(config)
+        _DETECTOR_CACHE[key] = detector
+    return detector
 
 
 def analyze_frames(
@@ -50,7 +101,7 @@ def analyze_frames(
     if detection_config is None:
         detection_config = DetectionConfig()
 
-    detector = _create_detector(detection_config)
+    detector = _get_cached_detector(detection_config)
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
@@ -126,8 +177,6 @@ def analyze_frames(
 
     reader_thread.join()
     cap.release()
-    detector.close()
-
     if read_error:
         raise read_error[0]
 
