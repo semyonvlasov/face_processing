@@ -40,6 +40,11 @@ def _close_cached_detectors() -> None:
             detector.close()
         except Exception:
             pass
+        finally:
+            try:
+                detector._handle = None  # type: ignore[attr-defined]
+            except Exception:
+                pass
     _DETECTOR_CACHE.clear()
 
 
