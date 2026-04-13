@@ -9,6 +9,8 @@ RUN apt-get update \
         ca-certificates \
         ffmpeg \
         git \
+        libegl1 \
+        libgles2 \
         libsndfile1 \
         rclone \
     && rm -rf /var/lib/apt/lists/*
