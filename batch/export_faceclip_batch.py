@@ -70,6 +70,27 @@ def log(message: str) -> None:
     print(f"{timestamp()} {message}", flush=True)
 
 
+def should_suppress_runtime_log(line: str) -> bool:
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("WARNING: All log messages before absl::InitializeLog() is called"):
+        return True
+    if stripped.startswith("INFO: Created TensorFlow Lite XNNPACK delegate for CPU."):
+        return True
+    if (
+        "face_landmarker_graph.cc:" in stripped
+        and "FaceBlendshapesGraph acceleration to xnnpack by default" in stripped
+    ):
+        return True
+    if (
+        "inference_feedback_manager.cc:" in stripped
+        and "Feedback manager requires a model with a single signature inference." in stripped
+    ):
+        return True
+    return False
+
+
 def append_jsonl(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
@@ -499,7 +520,7 @@ def run_video_worker(
         assert process.stdout is not None
         for line in process.stdout:
             line = line.rstrip()
-            if line:
+            if line and not should_suppress_runtime_log(line):
                 print(line, flush=True)
         rc = process.wait()
         payload = load_json(worker_result)
