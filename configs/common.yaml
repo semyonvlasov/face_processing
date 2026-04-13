@@ -88,7 +88,7 @@ face_processing:
     med_low_conf_ratio: 0.08
 
   stabilization:
-    enabled: false
+    enabled: true
     window: 5
     scale_outlier_threshold_ratio: 0.04
 

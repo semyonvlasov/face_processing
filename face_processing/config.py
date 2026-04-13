@@ -90,7 +90,7 @@ class RankingThresholds:
 
 @dataclass
 class StabilizationConfig:
-    enabled: bool = False
+    enabled: bool = True
     window: int = 5
     scale_outlier_threshold_ratio: float = 0.04
 
