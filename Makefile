@@ -40,9 +40,13 @@ remote-docker-host-setup:
 		fi; \
 		sudo_cmd=''; \
 		if [ \"\$$(id -u)\" -ne 0 ]; then sudo_cmd='sudo'; fi; \
-		\$$sudo_cmd apt-get update; \
-		DEBIAN_FRONTEND=noninteractive \$$sudo_cmd apt-get install -y ca-certificates docker.io git openssh-client; \
-		\$$sudo_cmd systemctl enable --now docker; \
+		if command -v docker >/dev/null 2>&1; then \
+			echo 'docker already installed; skipping apt install'; \
+		else \
+			\$$sudo_cmd apt-get update; \
+			DEBIAN_FRONTEND=noninteractive \$$sudo_cmd apt-get install -y ca-certificates docker.io git openssh-client; \
+		fi; \
+		\$$sudo_cmd systemctl enable --now docker >/dev/null 2>&1 || true; \
 		docker --version; \
 	"
 	@echo "remote-docker-host-setup complete: $(REMOTE)"
