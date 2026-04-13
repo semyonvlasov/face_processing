@@ -338,6 +338,55 @@ def result_to_manifest_entries(result, source_name: str, promoted_payloads: list
     return entries
 
 
+def summarize_video_entries(
+    *,
+    source_video: str,
+    total_videos: int,
+    video_index: int,
+    total_source_frames: int,
+    segment_entries: list[dict],
+) -> tuple[str, dict[str, int]]:
+    exported_segments = 0
+    dropped_segments = 0
+    failed_segments = 0
+    exported_source_frames = 0
+    tier_counts = {tier: 0 for tier in QUALITY_TIERS}
+
+    for entry in segment_entries:
+        status = str(entry.get("status") or "")
+        if status == "ok":
+            exported_segments += 1
+            start_frame = int(entry.get("source_segment_start_frame") or 0)
+            end_frame = int(entry.get("source_segment_end_frame") or -1)
+            if end_frame >= start_frame:
+                exported_source_frames += end_frame - start_frame + 1
+            tier = entry.get("tier")
+            if tier in QUALITY_TIERS:
+                tier_counts[str(tier)] += 1
+        elif status == "discard":
+            dropped_segments += 1
+        elif status == "fail":
+            failed_segments += 1
+
+    summary = (
+        f"[FaceclipExport] [{video_index}/{total_videos}] {source_video}: "
+        f"exported_segments={exported_segments} "
+        f"dropped_segments={dropped_segments} "
+        f"failed_segments={failed_segments} "
+        f"processed_source_frames={exported_source_frames}/{total_source_frames} "
+        f"confident={tier_counts['confident']} "
+        f"medium={tier_counts['medium']} "
+        f"unconfident={tier_counts['unconfident']}"
+    )
+    return summary, {
+        "exported_segments": exported_segments,
+        "dropped_segments": dropped_segments,
+        "failed_segments": failed_segments,
+        "processed_source_frames": exported_source_frames,
+        **tier_counts,
+    }
+
+
 def process_one_video(
     *,
     video_path: Path,
@@ -409,7 +458,7 @@ def run_video_worker(
     batch_output_dir: Path,
     work_root: Path,
     use_gpu: bool,
-) -> tuple[int, list[dict] | None]:
+) -> tuple[int, dict[str, Any] | None]:
     cleanup_video_artifacts(video_path=video_path, batch_output_dir=batch_output_dir, work_root=work_root)
 
     worker_result = work_root / f"{video_path.stem}.worker_result.json"
@@ -457,7 +506,7 @@ def run_video_worker(
         if isinstance(payload, dict):
             entries = payload.get("segment_entries")
             if isinstance(entries, list):
-                return rc, entries
+                return rc, payload
         return rc, None
     finally:
         try:
@@ -491,7 +540,7 @@ def worker_main(args: argparse.Namespace) -> int:
     video_path = Path(args.worker_video_path)
 
     try:
-        _, segment_entries = process_one_video(
+        result, segment_entries = process_one_video(
             video_path=video_path,
             dataset_kind=dataset_kind,
             source_archive=args.source_archive,
@@ -513,7 +562,14 @@ def worker_main(args: argparse.Namespace) -> int:
             }
         ]
 
-    write_json(Path(args.worker_result_path), {"segment_entries": segment_entries})
+    write_json(
+        Path(args.worker_result_path),
+        {
+            "source_video": video_path.name,
+            "total_frames": int(result.total_frames) if "result" in locals() else 0,
+            "segment_entries": segment_entries,
+        },
+    )
     return 0
 
 
@@ -560,6 +616,7 @@ def main() -> int:
     dataset_kind = resolve_dataset_kind(args.dataset_kind, args.source_archive, input_dir)
 
     counters, total_segments, start_video_index = load_resume_progress(manifest_path, resume_state_path)
+    total_processed_source_frames = 0
     videos = list(iter_videos(input_dir))
     start_video_index = max(0, min(start_video_index, len(videos)))
 
@@ -599,7 +656,7 @@ def main() -> int:
         log("[FaceclipExport] resume_at_end=true; no source videos left to export")
 
     for idx, video_path in enumerate(videos[start_video_index:], start=start_video_index + 1):
-        rc, segment_entries = run_video_worker(
+        rc, worker_payload = run_video_worker(
             config_path=config_path,
             video_path=video_path,
             source_archive=args.source_archive,
@@ -613,7 +670,7 @@ def main() -> int:
                 f"[FaceclipExport] gpu_worker_failed source_video={video_path.name} rc={rc}; "
                 "retrying on CPU"
             )
-            rc, segment_entries = run_video_worker(
+            rc, worker_payload = run_video_worker(
                 config_path=config_path,
                 video_path=video_path,
                 source_archive=args.source_archive,
@@ -622,6 +679,17 @@ def main() -> int:
                 work_root=work_root,
                 use_gpu=False,
             )
+
+        segment_entries: list[dict] | None = None
+        total_source_frames = 0
+        if isinstance(worker_payload, dict):
+            payload_entries = worker_payload.get("segment_entries")
+            if isinstance(payload_entries, list):
+                segment_entries = payload_entries
+            try:
+                total_source_frames = int(worker_payload.get("total_frames") or 0)
+            except (TypeError, ValueError):
+                total_source_frames = 0
 
         if segment_entries is None:
             segment_entries = [
@@ -644,10 +712,6 @@ def main() -> int:
             counters[status] += 1
             if status == "ok" and tier in QUALITY_TIERS:
                 counters[tier] += 1
-            log(
-                f"[FaceclipExport] [{idx}/{len(videos)}]"
-                f"[{entry['segment_index']}/{entry['segment_count']}] {entry['message']}"
-            )
             append_jsonl(
                 manifest_path,
                 {
@@ -665,6 +729,16 @@ def main() -> int:
                     "source_segment_end_frame": entry["source_segment_end_frame"],
                 },
             )
+
+        video_summary, video_counts = summarize_video_entries(
+            source_video=video_path.stem,
+            total_videos=len(videos),
+            video_index=idx,
+            total_source_frames=total_source_frames,
+            segment_entries=segment_entries,
+        )
+        total_processed_source_frames += video_counts["processed_source_frames"]
+        log(video_summary)
 
         write_json(
             resume_state_path,
@@ -692,6 +766,7 @@ def main() -> int:
         "export_bitrate": pipeline_cfg.export.bitrate,
         "total_videos": len(videos),
         "total_segments": total_segments,
+        "processed_source_frames": total_processed_source_frames,
         **counters,
     }
     write_json(summary_path, summary)
