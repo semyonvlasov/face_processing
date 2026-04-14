@@ -179,13 +179,19 @@ def _crop_face_rotated(
         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0),
     )
 
-    if use_stabilized_crop and fd.stable_crop_cx_rot is not None and fd.stable_crop_w_rot is not None:
-        cx_rot = fd.stable_crop_cx_rot
-        cy_rot = fd.stable_crop_cy_rot if fd.stable_crop_cy_rot is not None else fd.cy
-        face_w_rot = fd.stable_crop_w_rot
-        face_h_rot = fd.stable_crop_h_rot if fd.stable_crop_h_rot is not None else face_w_rot
+    if use_stabilized_crop and fd.crop_cx_rot is not None and fd.crop_w_rot is not None:
+        cx_rot = fd.crop_cx_rot
+        cy_rot = fd.crop_cy_rot if fd.crop_cy_rot is not None else fd.cy
+        face_w_rot = fd.crop_w_rot
+        face_h_rot = fd.crop_h_rot if fd.crop_h_rot is not None else face_w_rot
     else:
-        cx_rot, cy_rot, face_w_rot, face_h_rot = _compute_raw_crop_geometry(fd, roll, frame_w, frame_h)
+        if fd.raw_crop_cx_rot is not None and fd.raw_crop_w_rot is not None:
+            cx_rot = fd.raw_crop_cx_rot
+            cy_rot = fd.raw_crop_cy_rot if fd.raw_crop_cy_rot is not None else fd.cy
+            face_w_rot = fd.raw_crop_w_rot
+            face_h_rot = fd.raw_crop_h_rot if fd.raw_crop_h_rot is not None else face_w_rot
+        else:
+            cx_rot, cy_rot, face_w_rot, face_h_rot = _compute_raw_crop_geometry(fd, roll, frame_w, frame_h)
 
     if mode == "stretch_to_square":
         crop = _extract_crop_stretch(rotated, cx_rot, cy_rot, face_w_rot, S, frame_w, frame_h)
@@ -226,10 +232,10 @@ def prepare_segment_crop_geometry(
 
         roll = fd.roll if fd.pose_valid else 0.0
         cx_rot, cy_rot, face_w_rot, face_h_rot = _compute_raw_crop_geometry(fd, roll, frame_w, frame_h)
-        fd.crop_cx_rot = cx_rot
-        fd.crop_cy_rot = cy_rot
-        fd.crop_w_rot = face_w_rot
-        fd.crop_h_rot = face_h_rot
+        fd.raw_crop_cx_rot = cx_rot
+        fd.raw_crop_cy_rot = cy_rot
+        fd.raw_crop_w_rot = face_w_rot
+        fd.raw_crop_h_rot = face_h_rot
 
         eye_dist, eye_mouth_dist = _compute_anchor_distances(fd, roll, frame_w, frame_h)
         fd.eye_dist = eye_dist
@@ -288,6 +294,16 @@ def prepare_segment_crop_geometry(
         fd.stable_crop_cy_rot = float(stable_cy[idx])
         fd.stable_crop_w_rot = float(stable_w[idx])
         fd.stable_crop_h_rot = float(stable_h[idx])
+        if stabilization.enabled:
+            fd.crop_cx_rot = fd.stable_crop_cx_rot
+            fd.crop_cy_rot = fd.stable_crop_cy_rot
+            fd.crop_w_rot = fd.stable_crop_w_rot
+            fd.crop_h_rot = fd.stable_crop_h_rot
+        else:
+            fd.crop_cx_rot = fd.raw_crop_cx_rot
+            fd.crop_cy_rot = fd.raw_crop_cy_rot
+            fd.crop_w_rot = fd.raw_crop_w_rot
+            fd.crop_h_rot = fd.raw_crop_h_rot
         if np.isfinite(raw_w_arr[idx]) and np.isfinite(stable_w[idx]) and stable_w[idx] > 0:
             ratio = abs((raw_w_arr[idx] / stable_w[idx]) - 1.0)
             threshold = max(0.0, float(stabilization.scale_outlier_threshold_ratio))
@@ -410,19 +426,9 @@ def _extract_crop_pad(
     frame_w: int,
     frame_h: int,
 ) -> np.ndarray:
-    """Crop preserving aspect ratio, pad to SxS."""
-    half_s = S / 2.0
-    x1 = int(round(cx - half_s))
-    x2 = int(round(cx + half_s))
-    y1 = int(round(cy - half_s))
-    y2 = int(round(cy + half_s))
-
-    crop = _safe_crop(frame, x1, y1, x2, y2, frame_w, frame_h)
-
-    if crop.shape[0] != S or crop.shape[1] != S:
-        crop = cv2.resize(crop, (S, S), interpolation=cv2.INTER_LINEAR)
-
-    return crop
+    """Crop preserving aspect ratio with subpixel center sampling, output SxS."""
+    del face_w, face_h, frame_w, frame_h
+    return cv2.getRectSubPix(frame, (S, S), (float(cx), float(cy)))
 
 
 def _safe_crop(

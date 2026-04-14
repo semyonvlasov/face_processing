@@ -34,6 +34,10 @@ class FrameData:
     transform_matrix: np.ndarray | None = None
 
     # Rotated crop geometry (filled during export)
+    raw_crop_cx_rot: float | None = None
+    raw_crop_cy_rot: float | None = None
+    raw_crop_w_rot: float | None = None
+    raw_crop_h_rot: float | None = None
     crop_cx_rot: float | None = None
     crop_cy_rot: float | None = None
     crop_w_rot: float | None = None

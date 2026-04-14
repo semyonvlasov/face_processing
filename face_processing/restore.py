@@ -111,10 +111,11 @@ def restore_segment(
 
             row = frame_rows[i]
             roll = row["roll"]
+            cx_rot, cy_rot, crop_w_rot, crop_h_rot = _resolve_restore_geometry(row, S)
 
             # Un-stretch face crop to the dimensions it had before stretch
             if export_mode == "stretch_to_square":
-                crop_w = max(1, int(round(row["crop_w_rot"])))
+                crop_w = max(1, int(round(crop_w_rot)))
                 crop_h = S
                 unstretched = cv2.resize(face_crop, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
             else:
@@ -125,8 +126,8 @@ def restore_segment(
             # Warp face patch directly into original frame using inverse
             # of the export transform (no double-rotation of the full frame).
             restored = _warp_face_into_frame(
-                frame_orig, unstretched, row, roll,
-                crop_w, crop_h, frame_w, frame_h,
+                frame_orig, unstretched, roll,
+                crop_w, crop_h, frame_w, frame_h, cx_rot, cy_rot,
             )
 
             proc.stdin.write(restored.tobytes())
@@ -152,6 +153,11 @@ def restore_segment(
 def _load_frame_rows(
     csv_path: str, start_frame: int, end_frame: int,
 ) -> list[dict]:
+    def _parse_optional_float(value: str | None) -> float | None:
+        if value is None or value == "":
+            return None
+        return float(value)
+
     rows = []
     with open(csv_path) as f:
         reader = csv.DictReader(f)
@@ -168,11 +174,72 @@ def _load_frame_rows(
                 "cy": float(r["cy"]) if r["cy"] else 0.0,
                 "face_w": float(r["face_w"]) if r["face_w"] else 0.0,
                 "face_h": float(r["face_h"]) if r["face_h"] else 0.0,
-                "crop_cx_rot": float(r["crop_cx_rot"]) if r.get("crop_cx_rot") else 0.0,
-                "crop_cy_rot": float(r["crop_cy_rot"]) if r.get("crop_cy_rot") else 0.0,
-                "crop_w_rot": float(r["crop_w_rot"]) if r.get("crop_w_rot") else 0.0,
+                "raw_crop_cx_rot": _parse_optional_float(r.get("raw_crop_cx_rot")),
+                "raw_crop_cy_rot": _parse_optional_float(r.get("raw_crop_cy_rot")),
+                "raw_crop_w_rot": _parse_optional_float(r.get("raw_crop_w_rot")),
+                "raw_crop_h_rot": _parse_optional_float(r.get("raw_crop_h_rot")),
+                "crop_cx_rot": _parse_optional_float(r.get("crop_cx_rot")),
+                "crop_cy_rot": _parse_optional_float(r.get("crop_cy_rot")),
+                "crop_w_rot": _parse_optional_float(r.get("crop_w_rot")),
+                "crop_h_rot": _parse_optional_float(r.get("crop_h_rot")),
+                "stable_crop_cx_rot": _parse_optional_float(r.get("stable_crop_cx_rot")),
+                "stable_crop_cy_rot": _parse_optional_float(r.get("stable_crop_cy_rot")),
+                "stable_crop_w_rot": _parse_optional_float(r.get("stable_crop_w_rot")),
+                "stable_crop_h_rot": _parse_optional_float(r.get("stable_crop_h_rot")),
             })
     return rows
+
+
+def _resolve_restore_geometry(
+    row: dict,
+    output_size: int,
+) -> tuple[float, float, float, float]:
+    has_raw_columns = any(
+        row.get(key) is not None
+        for key in ("raw_crop_cx_rot", "raw_crop_cy_rot", "raw_crop_w_rot", "raw_crop_h_rot")
+    )
+
+    cx_rot = row["crop_cx_rot"]
+    if cx_rot is None:
+        cx_rot = row["stable_crop_cx_rot"]
+    if cx_rot is None:
+        cx_rot = row["raw_crop_cx_rot"]
+
+    cy_rot = row["crop_cy_rot"]
+    if cy_rot is None:
+        cy_rot = row["stable_crop_cy_rot"]
+    if cy_rot is None:
+        cy_rot = row["raw_crop_cy_rot"]
+
+    crop_w_rot = row["crop_w_rot"]
+    if crop_w_rot is None:
+        crop_w_rot = row["stable_crop_w_rot"]
+    if crop_w_rot is None:
+        crop_w_rot = row["raw_crop_w_rot"]
+
+    crop_h_rot = row["crop_h_rot"]
+    if crop_h_rot is None:
+        crop_h_rot = row["stable_crop_h_rot"]
+    if crop_h_rot is None:
+        crop_h_rot = row["raw_crop_h_rot"]
+    if crop_h_rot is None:
+        crop_h_rot = float(output_size)
+
+    # Backward compatibility for older logs where crop_* was raw and stable_* held the effective geometry.
+    if not has_raw_columns and row.get("stable_crop_cx_rot") is not None and row.get("stable_crop_w_rot") is not None:
+        cx_rot = float(row["stable_crop_cx_rot"])
+        cy_rot = float(row["stable_crop_cy_rot"]) if row.get("stable_crop_cy_rot") is not None else float(cy_rot)
+        crop_w_rot = float(row["stable_crop_w_rot"])
+        crop_h_rot = (
+            float(row["stable_crop_h_rot"])
+            if row.get("stable_crop_h_rot") is not None
+            else float(crop_h_rot)
+        )
+
+    if cx_rot is None or cy_rot is None or crop_w_rot is None:
+        raise RuntimeError("Missing crop geometry required for restore")
+
+    return float(cx_rot), float(cy_rot), float(crop_w_rot), float(crop_h_rot)
 
 
 
@@ -180,12 +247,13 @@ def _load_frame_rows(
 def _warp_face_into_frame(
     frame_orig: np.ndarray,
     face_patch: np.ndarray,
-    row: dict,
     roll: float,
     crop_w: int,
     crop_h: int,
     frame_w: int,
     frame_h: int,
+    cx_rot: float,
+    cy_rot: float,
 ) -> np.ndarray:
     """Warp face patch back into the original (non-rotated) frame.
 
@@ -198,10 +266,6 @@ def _warp_face_into_frame(
         original frame by applying the INVERSE rotation (+roll).
     """
     fc = frame_w / 2.0, frame_h / 2.0
-
-    # Exact face center in rotated frame (saved during export)
-    cx_rot = row["crop_cx_rot"]
-    cy_rot = row["crop_cy_rot"]
 
     # 3 corners of the face patch in patch-local coords
     #   top-left, top-right, bottom-left
