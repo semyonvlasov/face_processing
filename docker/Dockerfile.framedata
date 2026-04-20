@@ -4,13 +4,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
-# System deps: ffmpeg for encoding, libgl1+libglib2.0-0 for OpenCV headless
+# System deps: ffmpeg for encoding, libgl1+libglib2.0-0 for OpenCV headless, wget for model download
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         ffmpeg \
         libgl1 \
         libglib2.0-0 \
+        wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace/repo
@@ -21,10 +22,15 @@ RUN pip install --upgrade pip \
     && pip install opencv-python-headless>=4.8 \
     && pip install -r /tmp/requirements-docker.txt
 
-# Copy source + model asset
+# Copy source
 COPY face_processing/ face_processing/
 COPY face_framedata/  face_framedata/
-COPY assets/          assets/
+
+# Download MediaPipe face landmarker model (gitignored, not in repo).
+# The v2-with-blendshapes asset is identical to the base face_landmarker task file.
+RUN mkdir -p assets \
+    && wget -q -O assets/face_landmarker_v2_with_blendshapes.task \
+       "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 
 # Make packages importable without a build step
 ENV PYTHONPATH=/workspace/repo

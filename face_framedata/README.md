@@ -30,9 +30,13 @@ jitter from the geometry source.
 ### Build
 
 ```bash
-# from repo root
+git clone https://github.com/semyonvlasov/face_processing.git
+cd face_processing
 docker build -f docker/Dockerfile.framedata -t face-framedata:latest .
 ```
+
+The MediaPipe model (`face_landmarker_v2_with_blendshapes.task`) is downloaded
+automatically during the build — no manual asset setup needed.
 
 ### Run — single video, all stages
 
