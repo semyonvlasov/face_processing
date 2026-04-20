@@ -8,6 +8,25 @@ the face region needed, run inference, then warp the result back.
 
 ## Pipeline stages
 
+### Prepare pipeline (large square clips → 1080p + 540p)
+
+For clips that arrive as large squares (e.g. 3800×3800), use the all-in-one
+prepare command:
+
+```
+face-framedata-prepare  →  {stem}_1080p.mp4  +  {stem}_1080p_framedata.json
+                        →  {stem}_540p.mp4   +  {stem}_540p_framedata.json
+```
+
+What it does internally:
+1. Validates source is at least 1080 wide and 1920 tall.
+2. Center-crops to 9:16 aspect ratio, scales to 1080×1920 at 25 fps / 8 Mbps.
+3. Analyzes faces on the 1080p video with ROI [0.1, 0.4] (default) and writes framedata.
+4. Scales 1080p → 540×960 at 4 Mbps.
+5. Derives 540p framedata by halving all pixel coordinates (cx, cy, w, h).
+
+### Base pipeline (already-normalized video)
+
 ```
 face-framedata          →  *_framedata.json + normalized.mp4
     ↓
@@ -38,7 +57,36 @@ docker build -f docker/Dockerfile.framedata -t face-framedata:latest .
 The MediaPipe model (`face_landmarker_v2_with_blendshapes.task`) is downloaded
 automatically during the build — no manual asset setup needed.
 
-### Run — single video, all stages
+### Run — prepare pipeline (large square clip → 1080p + 540p)
+
+One command, all outputs:
+
+```bash
+docker run --rm \
+  -v /path/to/your/videos:/data \
+  face-framedata:latest \
+  face-framedata-prepare \
+    --input      /data/clip_3800x3800.mp4 \
+    --output-dir /data/output
+```
+
+Output in `/data/output/<stem>/`:
+```
+<stem>_1080p.mp4               — 1080×1920, 25 fps, 8 Mbps
+<stem>_1080p_framedata.json    — per-frame geometry for 1080p
+<stem>_540p.mp4                — 540×960,  25 fps, 4 Mbps
+<stem>_540p_framedata.json     — per-frame geometry for 540p (coords ÷ 2)
+```
+
+Optional flags:
+```
+--roi-top    0.1   vertical ROI start (fraction of frame height)
+--roi-bottom 0.4   vertical ROI end   (face must be in this band)
+--gpu              use GPU (Metal) for MediaPipe
+--verbose / -v
+```
+
+### Run — base pipeline (already-normalized video)
 
 Mount a local directory as `/data` and run each stage:
 
@@ -83,10 +131,20 @@ docker run --rm -it \
   bash
 ```
 
-All three CLI commands are on PATH inside the container:
-`face-framedata`, `face-framedata-cut`, `face-framedata-restore`.
+All CLI commands are on PATH inside the container:
+`face-framedata-prepare`, `face-framedata`, `face-framedata-cut`, `face-framedata-restore`.
 
 ### CLI flags
+
+**`face-framedata-prepare`**
+```
+--input / -i       Large source video (≥1080 wide, ≥1920 tall)
+--output-dir / -o  Root output directory (default: output/)
+--roi-top          ROI top fraction for face detection (default: 0.1)
+--roi-bottom       ROI bottom fraction for face detection (default: 0.4)
+--gpu              Use GPU (Metal) for MediaPipe inference
+--verbose / -v     Debug logging
+```
 
 **`face-framedata`**
 ```

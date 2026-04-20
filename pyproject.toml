@@ -30,6 +30,7 @@ linly = [
 [project.scripts]
 face-processing = "face_processing.cli:main"
 face-framedata = "face_framedata.cli:main"
+face-framedata-prepare = "face_framedata.prepare:main"
 face-framedata-cut = "face_framedata.cut:main"
 face-framedata-restore = "face_framedata.restore:main"
 linly-processing = "linly_processing.cli:main"
