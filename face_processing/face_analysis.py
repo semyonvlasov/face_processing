@@ -169,6 +169,7 @@ def analyze_frames(
         fd = _process_frame(
             frame_bgr, frame_idx, frame_w, frame_h, frame_area,
             detector, detection_config.use_gpu,
+            detection_config.roi_top_ratio, detection_config.roi_bottom_ratio,
         )
         results.append(fd)
 
@@ -197,14 +198,24 @@ def _process_frame(
     frame_area: int,
     detector: vision.FaceLandmarker,
     use_gpu: bool = False,
+    roi_top_ratio: float = 0.0,
+    roi_bottom_ratio: float = 1.0,
 ) -> FrameData:
     fd = FrameData(frame_idx=frame_idx)
 
+    # Optional vertical ROI crop — narrows the image passed to MediaPipe so
+    # small faces fill a larger fraction of the input, improving detection.
+    roi_y0 = int(roi_top_ratio * frame_h)
+    roi_y1 = int(roi_bottom_ratio * frame_h)
+    use_roi = roi_y0 > 0 or roi_y1 < frame_h
+    detect_bgr = frame_bgr[roi_y0:roi_y1, :] if use_roi else frame_bgr
+    crop_h = roi_y1 - roi_y0
+
     if use_gpu:
-        frame_rgba = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGBA)
+        frame_rgba = cv2.cvtColor(detect_bgr, cv2.COLOR_BGR2RGBA)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGBA, data=frame_rgba)
     else:
-        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        frame_rgb = cv2.cvtColor(detect_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
 
     try:
@@ -233,6 +244,12 @@ def _process_frame(
     lmks_norm = np.array(
         [[lm.x, lm.y, lm.z] for lm in face_landmarks], dtype=np.float64
     )
+
+    # If ROI crop was used, landmarks are normalized relative to the crop —
+    # rescale y back to full-frame normalized space.
+    if use_roi:
+        lmks_norm[:, 1] = (lmks_norm[:, 1] * crop_h + roi_y0) / frame_h
+
     fd.landmarks = lmks_norm
 
     lmks_px = lmks_norm.copy()

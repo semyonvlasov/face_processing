@@ -27,6 +27,12 @@ class DetectionConfig:
     min_detection_confidence: float = 0.85
     min_presence_confidence: float = 0.85
     use_gpu: bool = False
+    # Restrict analysis to a vertical ROI (fraction of frame height).
+    # E.g. roi_bottom_ratio=0.4 passes only the top 40% of the frame to
+    # MediaPipe — useful when the face is small and located at the top.
+    # Landmark coordinates are automatically rescaled back to full-frame space.
+    roi_top_ratio: float = 0.0
+    roi_bottom_ratio: float = 1.0
 
 
 @dataclass
