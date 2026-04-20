@@ -5,11 +5,9 @@ import logging
 import os
 import tempfile
 
-import cv2
-
+from face_processing.analysis_core import run_core_analysis
 from face_processing.config import PipelineConfig
 from face_processing.crop_export import compute_output_size, export_segment, prepare_segment_crop_geometry
-from face_processing.face_analysis import analyze_frames
 from face_processing.frame_quality import (
     DROP_REASON_PRIORITY,
     classify_frames,
@@ -19,7 +17,6 @@ from face_processing.frame_quality import (
 )
 from face_processing.logging_utils import save_frame_log
 from face_processing.models import Segment, VideoResult
-from face_processing.normalize import normalize_video
 from face_processing.ranking import compute_segment_metrics, rank_segment
 from face_processing.segmentation import split_into_segments
 
@@ -36,22 +33,12 @@ def process_video(input_path: str, config: PipelineConfig | None = None) -> Vide
 
     result = VideoResult(source_video=os.path.basename(input_path))
 
-    # --- Stage 1: Normalize ---
-    logger.info("=== Stage 1: Normalizing video ===")
-    normalized_path = os.path.join(out_dir, "normalized.mp4")
-    normalize_video(input_path, normalized_path, config.normalization)
-
-    # Get frame dimensions
-    cap = cv2.VideoCapture(normalized_path)
-    frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    cap.release()
-    result.total_frames = total_frames
-
-    # --- Stage 2: Face analysis ---
-    logger.info("=== Stage 2: Analyzing frames ===")
-    frame_data = analyze_frames(normalized_path, config.detection)
+    # --- Stages 1+2: Normalize + face analysis ---
+    analysis = run_core_analysis(input_path, out_dir, config)
+    normalized_path = analysis.normalized_path
+    frame_w, frame_h = analysis.frame_w, analysis.frame_h
+    result.total_frames = analysis.total_frames
+    frame_data = analysis.frame_data
     result.frame_data = frame_data
 
     # --- Stage 3: Smooth pose, compute deltas, classify ---

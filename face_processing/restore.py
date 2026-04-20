@@ -113,10 +113,23 @@ def restore_segment(
             roll = row["roll"]
             cx_rot, cy_rot, crop_w_rot, crop_h_rot = _resolve_restore_geometry(row, S)
 
-            # Un-stretch face crop to the dimensions it had before stretch
+            # Un-stretch face crop to the dimensions it had before stretch.
+            # Use the same two-boundary rounding as _extract_crop_stretch so
+            # that crop_w/crop_h match the pixel dimensions that were actually
+            # exported.  Plain int(round(w)) can differ by ±1 from
+            # round(cx+w/2)-round(cx-w/2) when cx has a fractional part near
+            # 0.5, which causes a per-frame flip in the affine matrix → jitter.
             if export_mode == "stretch_to_square":
-                crop_w = max(1, int(round(crop_w_rot)))
-                crop_h = S
+                x1_rot = int(round(cx_rot - crop_w_rot / 2))
+                x2_rot = int(round(cx_rot + crop_w_rot / 2))
+                y1_rot = int(round(cy_rot - S / 2.0))
+                y2_rot = int(round(cy_rot + S / 2.0))
+                crop_w = max(1, x2_rot - x1_rot)
+                crop_h = max(1, y2_rot - y1_rot)
+                # Align center to the actual pixel-centre of the crop so the
+                # affine corners land exactly on the exported pixel boundaries.
+                cx_rot = (x1_rot + x2_rot) / 2.0
+                cy_rot = (y1_rot + y2_rot) / 2.0
                 unstretched = cv2.resize(face_crop, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
             else:
                 unstretched = face_crop
@@ -125,7 +138,7 @@ def restore_segment(
 
             # Warp face patch directly into original frame using inverse
             # of the export transform (no double-rotation of the full frame).
-            restored = _warp_face_into_frame(
+            restored = warp_face_into_frame(
                 frame_orig, unstretched, roll,
                 crop_w, crop_h, frame_w, frame_h, cx_rot, cy_rot,
             )
@@ -244,7 +257,7 @@ def _resolve_restore_geometry(
 
 
 
-def _warp_face_into_frame(
+def warp_face_into_frame(
     frame_orig: np.ndarray,
     face_patch: np.ndarray,
     roll: float,
@@ -301,7 +314,7 @@ def _warp_face_into_frame(
 
     # Feathered mask: solid white with smooth fade at edges
     feather = max(1, int(min(crop_w, crop_h) * 0.08))
-    mask_patch = _make_feather_mask(crop_w, crop_h, feather)
+    mask_patch = make_feather_mask(crop_w, crop_h, feather)
     mask_warped = cv2.warpAffine(
         mask_patch, M_warp, (frame_w, frame_h),
         borderMode=cv2.BORDER_CONSTANT, borderValue=0.0,
@@ -316,7 +329,7 @@ def _warp_face_into_frame(
     return result.clip(0, 255).astype(np.uint8)
 
 
-def _make_feather_mask(w: int, h: int, feather: int) -> np.ndarray:
+def make_feather_mask(w: int, h: int, feather: int) -> np.ndarray:
     """Create a single-channel mask: 255 inside, smooth linear fade at edges."""
     mask = np.ones((h, w), dtype=np.float32) * 255.0
     for i in range(feather):

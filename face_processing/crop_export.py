@@ -8,6 +8,7 @@ import cv2
 import numpy as np
 
 from face_processing.config import ExportConfig, StabilizationConfig
+from face_processing.geometry import compute_raw_crop_geometry, rotate_landmarks
 from face_processing.models import FrameData, Segment
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ def compute_output_size(
         lmks_px[:, 1] *= frame_h
 
         roll = fd.roll if fd.pose_valid else 0.0
-        rotated_lmks = _rotate_landmarks(lmks_px[:, :2], -roll, frame_w, frame_h)
+        rotated_lmks = rotate_landmarks(lmks_px[:, :2], -roll, frame_w, frame_h)
 
         ys = rotated_lmks[:, 1]
         face_h_rot = float(np.max(ys) - np.min(ys))
@@ -191,7 +192,8 @@ def _crop_face_rotated(
             face_w_rot = fd.raw_crop_w_rot
             face_h_rot = fd.raw_crop_h_rot if fd.raw_crop_h_rot is not None else face_w_rot
         else:
-            cx_rot, cy_rot, face_w_rot, face_h_rot = _compute_raw_crop_geometry(fd, roll, frame_w, frame_h)
+            geom = compute_raw_crop_geometry(fd, frame_w, frame_h)
+            cx_rot, cy_rot, face_w_rot, face_h_rot = geom if geom is not None else (fd.cx, fd.cy, fd.face_w, fd.face_h)
 
     if mode == "stretch_to_square":
         crop = _extract_crop_stretch(rotated, cx_rot, cy_rot, face_w_rot, S, frame_w, frame_h)
@@ -231,7 +233,7 @@ def prepare_segment_crop_geometry(
             continue
 
         roll = fd.roll if fd.pose_valid else 0.0
-        cx_rot, cy_rot, face_w_rot, face_h_rot = _compute_raw_crop_geometry(fd, roll, frame_w, frame_h)
+        cx_rot, cy_rot, face_w_rot, face_h_rot = compute_raw_crop_geometry(fd, frame_w, frame_h)
         fd.raw_crop_cx_rot = cx_rot
         fd.raw_crop_cy_rot = cy_rot
         fd.raw_crop_w_rot = face_w_rot
@@ -351,7 +353,7 @@ def _compute_anchor_distances(
     lmks_px = fd.landmarks.copy()
     lmks_px[:, 0] *= frame_w
     lmks_px[:, 1] *= frame_h
-    rotated_lmks = _rotate_landmarks(lmks_px[:, :2], -roll, frame_w, frame_h)
+    rotated_lmks = rotate_landmarks(lmks_px[:, :2], -roll, frame_w, frame_h)
 
     left_eye = np.mean(rotated_lmks[list(LEFT_EYE_INDICES)], axis=0)
     right_eye = np.mean(rotated_lmks[list(RIGHT_EYE_INDICES)], axis=0)
@@ -362,28 +364,6 @@ def _compute_anchor_distances(
     eye_mouth_dist = float(np.linalg.norm(mouth - eye_mid))
     return eye_dist, eye_mouth_dist
 
-
-def _compute_raw_crop_geometry(
-    fd: FrameData,
-    roll: float,
-    frame_w: int,
-    frame_h: int,
-) -> tuple[float, float, float, float]:
-    if fd.landmarks is None:
-        return fd.cx, fd.cy, fd.face_w, fd.face_h
-
-    lmks_px = fd.landmarks.copy()
-    lmks_px[:, 0] *= frame_w
-    lmks_px[:, 1] *= frame_h
-    rotated_lmks = _rotate_landmarks(lmks_px[:, :2], -roll, frame_w, frame_h)
-
-    xs = rotated_lmks[:, 0]
-    ys = rotated_lmks[:, 1]
-    cx_rot = float(np.mean(xs))
-    cy_rot = float(np.mean(ys))
-    face_w_rot = float(np.max(xs) - np.min(xs))
-    face_h_rot = float(np.max(ys) - np.min(ys))
-    return cx_rot, cy_rot, face_w_rot, face_h_rot
 
 
 def _extract_crop_stretch(
@@ -463,18 +443,3 @@ def _safe_crop(
     return result
 
 
-def _rotate_landmarks(
-    lmks_2d: np.ndarray,
-    angle_deg: float,
-    frame_w: int,
-    frame_h: int,
-) -> np.ndarray:
-    """Rotate 2D landmark points by angle_deg around frame center."""
-    cx = frame_w / 2.0
-    cy = frame_h / 2.0
-    M = cv2.getRotationMatrix2D((cx, cy), angle_deg, 1.0)
-
-    ones = np.ones((lmks_2d.shape[0], 1), dtype=np.float64)
-    pts = np.hstack([lmks_2d, ones])  # (N, 3)
-    rotated = (M @ pts.T).T  # (N, 2)
-    return rotated

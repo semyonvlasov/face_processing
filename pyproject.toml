@@ -11,15 +11,29 @@ dependencies = [
     "opencv-python>=4.8",
     "numpy>=1.24",
     "scipy>=1.11",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
 log = ["pandas", "pyarrow"]
 batch = ["pyyaml>=6.0"]
 audio = ["librosa>=0.10", "scipy>=1.11", "numba"]
+linly = [
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "Pillow>=10.0",
+    "scikit-image>=0.22",
+    "ultralytics>=8.3",
+    "yacs>=0.1.8",
+]
 
 [project.scripts]
 face-processing = "face_processing.cli:main"
+face-framedata = "face_framedata.cli:main"
+face-framedata-cut = "face_framedata.cut:main"
+face-framedata-restore = "face_framedata.restore:main"
+linly-processing = "linly_processing.cli:main"
+hybrid-processing = "hybrid_processing.cli:main"
 face-batch-gdrive = "batch.gdrive_processor:main"
 face-batch-local = "batch.local_processor:main"
 face-batch-export = "batch.export_faceclip_batch:main"
