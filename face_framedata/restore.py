@@ -1,14 +1,14 @@
 """Restore a processed face video back into the normalized source video.
 
 For each frame:
-  - Valid frames: use geometry (roll, cx, cy, w, h) from the framedata JSON.
+  - Valid frames: use geometry (roll, cx, cy) from the framedata JSON.
   - Fail frames (no face detected during analysis): geometry is linearly
     interpolated between the nearest valid neighbours so the face region
     is still blended back rather than left as the original.
 
 The inverse transform mirrors cut.py exactly:
-  1. Unstretch S×S → actual pixel crop dimensions (same boundary rounding).
-  2. Compute affine corners in the rotated frame.
+  1. The face video contains S×S frames (cut with getRectSubPix — no stretching).
+  2. Compute affine corners in the rotated frame centered at (cx, cy).
   3. Rotate corners back by +roll → original frame coordinates.
   4. warpAffine + feathered alpha-blend.
 """
@@ -90,26 +90,11 @@ def restore_video(
 
             roll, cx, cy, w, h = g
 
-            # Compute crop pixel boundaries — same two-boundary rounding as cut.py
-            x1 = int(round(cx - w / 2))
-            x2 = int(round(cx + w / 2))
-            y1 = int(round(cy - S / 2.0))
-            y2 = int(round(cy + S / 2.0))
-            crop_w = max(1, x2 - x1)
-            crop_h = max(1, y2 - y1)
-            # Align centers to actual pixel midpoints (eliminates per-frame ±0.5px jitter)
-            cx_aligned = (x1 + x2) / 2.0
-            cy_aligned = (y1 + y2) / 2.0
-
-            # Unstretch S×S → crop_w × crop_h
-            unstretched = cv2.resize(
-                face_crop, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR,
-            )
-
+            # Inverse of getRectSubPix: warp S×S patch back centered at (cx, cy)
             restored = warp_face_into_frame(
-                frame_orig, unstretched, roll,
-                crop_w, crop_h, frame_w, frame_h,
-                cx_aligned, cy_aligned,
+                frame_orig, face_crop, roll,
+                S, S, frame_w, frame_h,
+                cx, cy,
             )
             proc.stdin.write(restored.tobytes())
 

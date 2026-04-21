@@ -2,9 +2,9 @@
 
 For each frame the pipeline:
   1. Rotates the full frame by -roll around its center.
-  2. Crops a (face_w × output_size) rect centered at (cx, cy) using the same
-     two-boundary integer rounding as crop_export._extract_crop_stretch.
-  3. Stretches to output_size × output_size.
+  2. Extracts a fixed output_size × output_size square centered at (cx, cy)
+     using cv2.getRectSubPix — same as pad_to_square in crop_export.
+  3. Writes the S×S crop directly (no aspect-ratio stretching).
 
 Fail frames (no face detected) are written as black frames so the output
 video stays in sync with the source frame indices.
@@ -19,8 +19,6 @@ import subprocess
 
 import cv2
 import numpy as np
-
-from face_processing.geometry import rotate_landmarks
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +94,6 @@ def cut_face_video(
             roll: float = meta.get("sroll", meta["roll"])
             cx: float = meta.get("scx",  meta["cx"])
             cy: float = meta.get("scy",  meta["cy"])
-            w: float = meta.get("sw",   meta["w"])
 
             # Rotate full frame by -roll
             M = cv2.getRotationMatrix2D(
@@ -107,17 +104,8 @@ def cut_face_video(
                 borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0),
             )
 
-            # Two-boundary rounding — matches crop_export._extract_crop_stretch
-            x1 = int(round(cx - w / 2))
-            x2 = int(round(cx + w / 2))
-            y1 = int(round(cy - S / 2.0))
-            y2 = int(round(cy + S / 2.0))
-
-            crop = _safe_crop(rotated, x1, y1, x2, y2, frame_w, frame_h)
-            if crop.shape[0] > 0 and crop.shape[1] > 0:
-                crop = cv2.resize(crop, (S, S), interpolation=cv2.INTER_LINEAR)
-            else:
-                crop = black
+            # Fixed S×S square centered on face — matches pad_to_square export
+            crop = cv2.getRectSubPix(rotated, (S, S), (cx, cy))
 
             proc.stdin.write(crop.tobytes())
 
@@ -145,33 +133,6 @@ def cut_face_video(
 
     logger.info("Cut face video (%dx%d, %d frames) -> %s", S, S, total, output_path)
     return S
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def _safe_crop(
-    frame: np.ndarray,
-    x1: int, y1: int, x2: int, y2: int,
-    frame_w: int, frame_h: int,
-) -> np.ndarray:
-    """Crop with zero-padding for out-of-bounds regions."""
-    h_crop = y2 - y1
-    w_crop = x2 - x1
-    if h_crop <= 0 or w_crop <= 0:
-        return np.zeros((max(h_crop, 1), max(w_crop, 1), 3), dtype=np.uint8)
-
-    result = np.zeros((h_crop, w_crop, 3), dtype=np.uint8)
-    sx1 = max(0, x1); sy1 = max(0, y1)
-    sx2 = min(frame_w, x2); sy2 = min(frame_h, y2)
-    if sx1 >= sx2 or sy1 >= sy2:
-        return result
-
-    dx1 = sx1 - x1; dy1 = sy1 - y1
-    dx2 = dx1 + (sx2 - sx1); dy2 = dy1 + (sy2 - sy1)
-    result[dy1:dy2, dx1:dx2] = frame[sy1:sy2, sx1:sx2]
-    return result
 
 
 # ---------------------------------------------------------------------------
