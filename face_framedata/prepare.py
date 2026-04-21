@@ -24,6 +24,7 @@ from face_processing.config import PipelineConfig
 from face_processing.face_analysis import analyze_frames
 from face_processing.geometry import compute_raw_crop_geometry
 from face_framedata.pipeline import _smooth_geometry
+from face_framedata.cut import cut_face_video
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +50,11 @@ def prepare_and_analyze(
     roi_bottom: float = _DEFAULT_ROI_BOTTOM,
     ffmpeg_bin: str = "ffmpeg",
     ffmpeg_timeout: int = 600,
+    produce_faceclip: bool = True,
 ) -> dict:
-    """Prepare a large clip to 1080p + 540p portrait and generate framedata.
+    """Prepare a large clip to 1080p + 540p portrait, generate framedata and face clips.
 
+    By default also produces face clips: 192×192 for 1080p, 96×96 for 540p.
     Returns a summary dict with paths and frame counts.
     """
     if config is None:
@@ -144,7 +147,7 @@ def prepare_and_analyze(
         json.dump(sd_framedata, fh, separators=(",", ":"))
     logger.info("Wrote 540p framedata -> %s", sd_fd_path)
 
-    return {
+    result = {
         "source_video": os.path.basename(input_path),
         "total_frames": total,
         "valid_frames": valid_count,
@@ -154,6 +157,34 @@ def prepare_and_analyze(
         "540p_video": sd_path,
         "540p_framedata": sd_fd_path,
     }
+
+    # ── Step 8: Cut face clips ────────────────────────────────────────────────
+    if produce_faceclip:
+        hd_face_path = os.path.join(out_dir, f"{stem}_1080p_face.mp4")
+        logger.info("=== Cutting 1080p face clip (192x192) ===")
+        cut_face_video(
+            framedata_path=hd_fd_path,
+            video_path=hd_path,
+            output_path=hd_face_path,
+            output_size=192,
+            ffmpeg_bin=ffmpeg_bin,
+            ffmpeg_timeout=ffmpeg_timeout,
+        )
+        result["1080p_face_video"] = hd_face_path
+
+        sd_face_path = os.path.join(out_dir, f"{stem}_540p_face.mp4")
+        logger.info("=== Cutting 540p face clip (96x96) ===")
+        cut_face_video(
+            framedata_path=sd_fd_path,
+            video_path=sd_path,
+            output_path=sd_face_path,
+            output_size=96,
+            ffmpeg_bin=ffmpeg_bin,
+            ffmpeg_timeout=ffmpeg_timeout,
+        )
+        result["540p_face_video"] = sd_face_path
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -295,6 +326,8 @@ def main(argv: list[str] | None = None) -> None:
                         help=f"ROI bottom fraction for face detection (default: {_DEFAULT_ROI_BOTTOM})")
     parser.add_argument("--gpu", action="store_true",
                         help="Use GPU (Metal) for MediaPipe inference")
+    parser.add_argument("--no-faceclip", action="store_true",
+                        help="Skip face clip generation (192x192 @ 1080p, 96x96 @ 540p)")
     parser.add_argument("--verbose", "-v", action="store_true")
 
     args = parser.parse_args(argv)
@@ -313,6 +346,7 @@ def main(argv: list[str] | None = None) -> None:
         config=config,
         roi_top=args.roi_top,
         roi_bottom=args.roi_bottom,
+        produce_faceclip=not args.no_faceclip,
     )
 
     print(f"\nDone:")
@@ -320,6 +354,10 @@ def main(argv: list[str] | None = None) -> None:
     print(f"  1080p framedata: {report['1080p_framedata']}")
     print(f"  540p  video:     {report['540p_video']}")
     print(f"  540p  framedata: {report['540p_framedata']}")
+    if "1080p_face_video" in report:
+        print(f"  1080p face:      {report['1080p_face_video']}")
+    if "540p_face_video" in report:
+        print(f"  540p  face:      {report['540p_face_video']}")
     print(f"  Frames: {report['valid_frames']}/{report['total_frames']} valid")
 
 
