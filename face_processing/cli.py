@@ -48,6 +48,18 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="Keep normalized video for later restore",
     )
+    parser.add_argument(
+        "--roi-top",
+        type=float,
+        default=0.0,
+        help="ROI top fraction for face detection (default: 0.0 = full frame)",
+    )
+    parser.add_argument(
+        "--roi-bottom",
+        type=float,
+        default=1.0,
+        help="ROI bottom fraction for face detection (default: 1.0 = full frame)",
+    )
 
     args = parser.parse_args(argv)
 
@@ -71,6 +83,8 @@ def main(argv: list[str] | None = None) -> None:
         config.detection.use_gpu = True
     if args.keep_normalized:
         config.keep_normalized = True
+    config.detection.roi_top_ratio = args.roi_top
+    config.detection.roi_bottom_ratio = args.roi_bottom
 
     # Run pipeline
     result = process_video(args.input, config)

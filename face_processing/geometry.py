@@ -25,8 +25,13 @@ def compute_raw_crop_geometry(
     fd: FrameData,
     frame_w: int,
     frame_h: int,
+    roll_override: float | None = None,
 ) -> tuple[float, float, float, float] | None:
     """Return (cx_rot, cy_rot, w_rot, h_rot) from roll-corrected landmarks.
+
+    If roll_override is provided it is used instead of fd.roll, allowing the
+    caller to supply a pre-smoothed roll value so that the returned geometry is
+    consistent with whatever rotation will be applied at cut/restore time.
 
     Returns None if fd.landmarks is None.
     """
@@ -37,7 +42,10 @@ def compute_raw_crop_geometry(
     lmks_px[:, 0] *= frame_w
     lmks_px[:, 1] *= frame_h
 
-    roll = fd.roll if fd.pose_valid else 0.0
+    if roll_override is not None:
+        roll = roll_override
+    else:
+        roll = fd.roll if fd.pose_valid else 0.0
     rotated = rotate_landmarks(lmks_px[:, :2], -roll, frame_w, frame_h)
 
     xs = rotated[:, 0]

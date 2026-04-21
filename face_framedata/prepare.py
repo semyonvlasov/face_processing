@@ -94,6 +94,7 @@ def prepare_and_analyze(
 
     # ── Step 4: Compute per-frame geometry + smooth ───────────────────────
     frames_out: list[dict] = []
+    frame_data_valid: list = []
     fail_count = 0
     for fd in frame_data:
         geom = compute_raw_crop_geometry(fd, _HD_W, _HD_H)
@@ -107,9 +108,10 @@ def prepare_and_analyze(
                 "i": fd.frame_idx,
                 "roll": roll, "cx": cx, "cy": cy, "w": w, "h": h,
             })
+            frame_data_valid.append(fd)
 
     if smooth_window > 1:
-        _smooth_geometry(frames_out, window=smooth_window)
+        _smooth_geometry(frames_out, frame_data_valid, _HD_W, _HD_H, window=smooth_window)
 
     total = len(frame_data)
     valid_count = total - fail_count

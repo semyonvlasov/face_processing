@@ -12,43 +12,52 @@ from face_processing.geometry import compute_raw_crop_geometry
 
 logger = logging.getLogger(__name__)
 
-_SMOOTH_FIELDS = ("roll", "cx", "cy", "w", "h")
-_SMOOTH_OUT_FIELDS = ("sroll", "scx", "scy", "sw", "sh")
+def _smooth_geometry(
+    frames_out: list[dict],
+    frame_data_valid: list,
+    frame_w: int,
+    frame_h: int,
+    window: int = 5,
+) -> None:
+    """Add consistent smoothed geometry fields to each valid frame.
 
+    Two-pass algorithm:
+      1. Smooth the raw roll values (5-frame centered MA) → sroll.
+      2. Recompute (scx, scy, sw, sh) for each valid frame using sroll as
+         roll_override so that all smoothed fields share the same rotation angle.
 
-def _smooth_geometry(frames_out: list[dict], window: int = 5) -> None:
-    """Add smoothed geometry fields (sroll, scx, scy, sw, sh) to each valid frame.
-
-    Uses a centered moving average over *window* frames, considering only
-    valid frames (those without a "status" key).  Mutates frames_out in place.
+    This ensures that cut.py and restore.py can use sroll for frame rotation
+    and scx/scy/sw/sh for crop bounds without geometric inconsistency.
+    Mutates frames_out in place.
     """
     half = window // 2
     valid_indices = [i for i, fr in enumerate(frames_out) if "status" not in fr]
     if not valid_indices:
         return
 
-    # Build arrays for each field indexed by position in valid_indices
-    raw: dict[str, list[float]] = {f: [] for f in _SMOOTH_FIELDS}
-    for i in valid_indices:
-        fr = frames_out[i]
-        for field in _SMOOTH_FIELDS:
-            raw[field].append(float(fr[field]))
-
     n = len(valid_indices)
-    smoothed: dict[str, list[float]] = {}
-    for field in _SMOOTH_FIELDS:
-        vals = raw[field]
-        out = []
-        for k in range(n):
-            lo = max(0, k - half)
-            hi = min(n, k + half + 1)
-            out.append(float(np.mean(vals[lo:hi])))
-        smoothed[field] = out
+    raw_rolls = [float(frames_out[i]["roll"]) for i in valid_indices]
 
+    # Pass 1: smooth roll with centered MA
+    srolls: list[float] = []
+    for k in range(n):
+        lo = max(0, k - half)
+        hi = min(n, k + half + 1)
+        srolls.append(float(np.mean(raw_rolls[lo:hi])))
+
+    # Pass 2: recompute geometry using sroll so rotation and coords are consistent
     for k, list_idx in enumerate(valid_indices):
         fr = frames_out[list_idx]
-        for field, out_field in zip(_SMOOTH_FIELDS, _SMOOTH_OUT_FIELDS):
-            fr[out_field] = smoothed[field][k]
+        fd = frame_data_valid[k]
+        sroll = srolls[k]
+        geom = compute_raw_crop_geometry(fd, frame_w, frame_h, roll_override=sroll)
+        if geom is not None:
+            scx, scy, sw, sh = geom
+            fr["sroll"] = sroll
+            fr["scx"]   = scx
+            fr["scy"]   = scy
+            fr["sw"]    = sw
+            fr["sh"]    = sh
 
 
 def process_video_framedata(
@@ -74,6 +83,7 @@ def process_video_framedata(
     # --- Stage 3: Compute per-frame crop geometry ---
     logger.info("=== Stage 3: Computing per-frame crop geometry ===")
     frames_out: list[dict] = []
+    frame_data_valid: list = []  # FrameData objects for valid frames (parallel to valid entries)
     fail_count = 0
 
     for fd in analysis.frame_data:
@@ -92,10 +102,11 @@ def process_video_framedata(
                 "w": w,
                 "h": h,
             })
+            frame_data_valid.append(fd)
 
-    # --- Stage 3b: Smooth geometry ---
+    # --- Stage 3b: Smooth geometry (two-pass: smooth roll, recompute coords) ---
     if smooth_window > 1:
-        _smooth_geometry(frames_out, window=smooth_window)
+        _smooth_geometry(frames_out, frame_data_valid, frame_w, frame_h, window=smooth_window)
 
     valid_count = len(frames_out) - fail_count
     logger.info(
