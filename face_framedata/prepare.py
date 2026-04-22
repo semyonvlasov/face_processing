@@ -54,11 +54,14 @@ def prepare_and_analyze(
     ffmpeg_bin: str = "ffmpeg",
     ffmpeg_timeout: int = 600,
     produce_faceclip: bool = True,
+    keep_native: bool = False,
 ) -> dict:
     """Prepare a large clip: native crop → framedata → 1080p/540p → face clips.
 
     By default produces face clips: 192×192 for 1080p, 96×96 for 540p,
     cut from the native-resolution crop to minimise blur.
+    Native intermediate files (_native_crop.mp4, _native_framedata.json) are
+    deleted after processing unless keep_native=True.
     Returns a summary dict with paths and frame counts.
     """
     if config is None:
@@ -198,6 +201,17 @@ def prepare_and_analyze(
         )
         result["1080p_face_video"] = hd_face_path
         result["540p_face_video"] = sd_face_path
+
+    # ── Cleanup native intermediates ──────────────────────────────────────
+    if not keep_native:
+        for path in (native_path, native_fd_path):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+        del result["native_crop"]
+        del result["native_framedata"]
+        logger.info("Removed native intermediates")
 
     return result
 
@@ -341,6 +355,8 @@ def main(argv: list[str] | None = None) -> None:
                         help="Use GPU (Metal) for MediaPipe inference")
     parser.add_argument("--no-faceclip", action="store_true",
                         help="Skip face clip generation (192x192 @ 1080p, 96x96 @ 540p)")
+    parser.add_argument("--keep-native", action="store_true",
+                        help="Keep native intermediate files (_native_crop.mp4, _native_framedata.json)")
     parser.add_argument("--verbose", "-v", action="store_true")
 
     args = parser.parse_args(argv)
@@ -360,11 +376,13 @@ def main(argv: list[str] | None = None) -> None:
         roi_top=args.roi_top,
         roi_bottom=args.roi_bottom,
         produce_faceclip=not args.no_faceclip,
+        keep_native=args.keep_native,
     )
 
     print(f"\nDone:")
-    print(f"  native crop:     {report['native_crop']}")
-    print(f"  native framedata:{report['native_framedata']}")
+    if "native_crop" in report:
+        print(f"  native crop:     {report['native_crop']}")
+        print(f"  native framedata:{report['native_framedata']}")
     print(f"  1080p video:     {report['1080p_video']}")
     print(f"  1080p framedata: {report['1080p_framedata']}")
     print(f"  540p  video:     {report['540p_video']}")
