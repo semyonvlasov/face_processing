@@ -47,6 +47,12 @@ def restore_video(
     total = framedata["total_frames"]
     frames_list: list[dict] = framedata["frames"]
 
+    # reference_width: even-rounded median of smoothed face widths (stretch_to_square_mean_width)
+    widths = [float(fr.get("sw", fr["w"])) for fr in frames_list if "status" not in fr]
+    if not widths:
+        raise ValueError(f"No valid frames in {framedata_path}")
+    ref_w = max(2, int(round(float(np.median(widths)) / 2.0) * 2))
+
     # Build per-frame geometry arrays with linear interpolation for fail frames.
     geom = _build_interpolated_geometry(frames_list, total)
     # geom[i] = (roll, cx, cy, w, h) or None when there are no valid frames at all
@@ -90,10 +96,12 @@ def restore_video(
 
             roll, cx, cy, w, h = g
 
-            # Inverse of getRectSubPix: warp S×S patch back centered at (cx, cy)
+            # Undo stretch_to_square_mean_width: resize S×S → (ref_w × S), then warp
+            crop_h = S
+            unscaled = cv2.resize(face_crop, (ref_w, crop_h), interpolation=cv2.INTER_LINEAR)
             restored = warp_face_into_frame(
-                frame_orig, face_crop, roll,
-                S, S, frame_w, frame_h,
+                frame_orig, unscaled, roll,
+                ref_w, crop_h, frame_w, frame_h,
                 cx, cy,
             )
             proc.stdin.write(restored.tobytes())
