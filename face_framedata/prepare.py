@@ -1,11 +1,13 @@
-"""Prepare a large square clip and generate 1080p + 540p framedata.
+"""Prepare a large square clip and generate native + 1080p + 540p framedata.
 
 Pipeline:
   1. Validate: source width >= 1080 and height >= 1920.
-  2. Center-crop to 9:16 aspect ratio, scale to 1080×1920 at 25 fps, 8 Mbps.
-  3. Analyze the 1080p video (ROI [0.1, 0.4] by default) and write framedata JSON.
-  4. Scale 1080p → 540×960 at 4 Mbps.
-  5. Derive 540p framedata by halving all pixel coordinates (cx, cy, w, h).
+  2. Center-crop to 9:16 at native resolution, 25 fps, lossless H264.
+  3. Analyze the native crop (ROI [0.1, 0.4] by default) and compute framedata.
+  4. Scale native framedata → 1080p and 540p by proportional coordinate scaling.
+  5. Scale native crop → 1080×1920 @ 8 Mbps and 540×960 @ 4 Mbps.
+  6. Cut face clips from native video: 192×192 and 96×96 in one pass
+     using stretch_to_square_mean_width (median face width).
 
 Usage:
     face-framedata-prepare --input clip.mp4 --output-dir output/
@@ -24,16 +26,17 @@ from face_processing.config import PipelineConfig
 from face_processing.face_analysis import analyze_frames
 from face_processing.geometry import compute_raw_crop_geometry
 from face_framedata.pipeline import _smooth_geometry
-from face_framedata.cut import cut_face_video
+from face_framedata.cut import cut_face_clips_from_native
 
 logger = logging.getLogger(__name__)
 
 _HD_W, _HD_H = 1080, 1920
 _SD_W, _SD_H = 540, 960
-_HD_BITRATE = "8M"
-_SD_BITRATE = "4M"
-_TARGET_FPS = 25
-_DEFAULT_ROI_TOP = 0.1
+_NATIVE_CRF  = 0       # lossless H264 for intermediate native crop
+_HD_BITRATE  = "8M"
+_SD_BITRATE  = "4M"
+_TARGET_FPS  = 25
+_DEFAULT_ROI_TOP    = 0.1
 _DEFAULT_ROI_BOTTOM = 0.4
 
 
@@ -52,9 +55,10 @@ def prepare_and_analyze(
     ffmpeg_timeout: int = 600,
     produce_faceclip: bool = True,
 ) -> dict:
-    """Prepare a large clip to 1080p + 540p portrait, generate framedata and face clips.
+    """Prepare a large clip: native crop → framedata → 1080p/540p → face clips.
 
-    By default also produces face clips: 192×192 for 1080p, 96×96 for 540p.
+    By default produces face clips: 192×192 for 1080p, 96×96 for 540p,
+    cut from the native-resolution crop to minimise blur.
     Returns a summary dict with paths and frame counts.
     """
     if config is None:
@@ -73,15 +77,15 @@ def prepare_and_analyze(
         )
     logger.info("Source: %dx%d — %s", src_w, src_h, input_path)
 
-    # ── Step 2: Center-crop 9:16, scale to 1080×1920 @ 25 fps ────────────
-    hd_path = os.path.join(out_dir, f"{stem}_1080p.mp4")
-    _prepare_hd(
-        input_path, hd_path, src_w, src_h,
-        _HD_W, _HD_H, _TARGET_FPS, _HD_BITRATE,
+    # ── Step 2: Center-crop to 9:16 at native resolution (lossless) ───────
+    native_path = os.path.join(out_dir, f"{stem}_native_crop.mp4")
+    native_w, native_h = _crop_native(
+        input_path, native_path, src_w, src_h,
+        _TARGET_FPS, _NATIVE_CRF,
         ffmpeg_bin, ffmpeg_timeout,
     )
 
-    # ── Step 3: Face analysis on 1080p ────────────────────────────────────
+    # ── Step 3: Face analysis on native crop ──────────────────────────────
     detection_cfg = config.detection.__class__(
         model_path=config.detection.model_path,
         num_faces=config.detection.num_faces,
@@ -92,15 +96,18 @@ def prepare_and_analyze(
         roi_bottom_ratio=roi_bottom,
     )
 
-    logger.info("=== Analyzing 1080p video (ROI [%.2f, %.2f]) ===", roi_top, roi_bottom)
-    frame_data = analyze_frames(hd_path, detection_cfg)
+    logger.info(
+        "=== Analyzing native crop %dx%d (ROI [%.2f, %.2f]) ===",
+        native_w, native_h, roi_top, roi_bottom,
+    )
+    frame_data = analyze_frames(native_path, detection_cfg)
 
-    # ── Step 4: Compute per-frame geometry + smooth ───────────────────────
+    # ── Step 4: Compute per-frame geometry + smooth (native coords) ────────
     frames_out: list[dict] = []
     frame_data_valid: list = []
     fail_count = 0
     for fd in frame_data:
-        geom = compute_raw_crop_geometry(fd, _HD_W, _HD_H)
+        geom = compute_raw_crop_geometry(fd, native_w, native_h)
         if geom is None:
             frames_out.append({"i": fd.frame_idx, "status": "fail"})
             fail_count += 1
@@ -114,74 +121,82 @@ def prepare_and_analyze(
             frame_data_valid.append(fd)
 
     if smooth_window > 1:
-        _smooth_geometry(frames_out, frame_data_valid, _HD_W, _HD_H, window=smooth_window)
+        _smooth_geometry(frames_out, frame_data_valid, native_w, native_h, window=smooth_window)
 
     total = len(frame_data)
     valid_count = total - fail_count
     logger.info("Frames: total=%d  valid=%d  fail=%d", total, valid_count, fail_count)
 
-    # ── Step 5: Write 1080p framedata ────────────────────────────────────
-    hd_framedata: dict = {
-        "source_video": os.path.basename(hd_path),
+    # ── Step 5: Write native framedata ────────────────────────────────────
+    native_framedata: dict = {
+        "source_video": os.path.basename(native_path),
         "total_frames": total,
         "frames": frames_out,
     }
+    native_fd_path = os.path.join(out_dir, f"{stem}_native_framedata.json")
+    with open(native_fd_path, "w") as fh:
+        json.dump(native_framedata, fh, separators=(",", ":"))
+    logger.info("Wrote native framedata -> %s", native_fd_path)
+
+    # ── Step 6: Derive 1080p framedata (scale native coords) ─────────────
+    scale_hd = _HD_W / native_w
+    hd_framedata = _scale_framedata(native_framedata, scale_hd)
+    hd_framedata["source_video"] = f"{stem}_1080p.mp4"
     hd_fd_path = os.path.join(out_dir, f"{stem}_1080p_framedata.json")
     with open(hd_fd_path, "w") as fh:
         json.dump(hd_framedata, fh, separators=(",", ":"))
     logger.info("Wrote 1080p framedata -> %s", hd_fd_path)
 
-    # ── Step 6: Scale to 540p ─────────────────────────────────────────────
-    sd_path = os.path.join(out_dir, f"{stem}_540p.mp4")
-    _scale_video(
-        hd_path, sd_path, _SD_W, _SD_H, _SD_BITRATE,
-        ffmpeg_bin, ffmpeg_timeout,
-    )
-
-    # ── Step 7: Derive 540p framedata (pixel coords × 0.5) ───────────────
-    scale = _SD_W / _HD_W  # 0.5
-    sd_framedata = _scale_framedata(hd_framedata, scale)
-    sd_framedata["source_video"] = os.path.basename(sd_path)
+    # ── Step 7: Derive 540p framedata ─────────────────────────────────────
+    scale_sd = _SD_W / native_w
+    sd_framedata = _scale_framedata(native_framedata, scale_sd)
+    sd_framedata["source_video"] = f"{stem}_540p.mp4"
     sd_fd_path = os.path.join(out_dir, f"{stem}_540p_framedata.json")
     with open(sd_fd_path, "w") as fh:
         json.dump(sd_framedata, fh, separators=(",", ":"))
     logger.info("Wrote 540p framedata -> %s", sd_fd_path)
+
+    # ── Step 8: Scale native crop → 1080p ─────────────────────────────────
+    hd_path = os.path.join(out_dir, f"{stem}_1080p.mp4")
+    _scale_video(
+        native_path, hd_path, _HD_W, _HD_H, _HD_BITRATE,
+        ffmpeg_bin, ffmpeg_timeout,
+    )
+
+    # ── Step 9: Scale native crop → 540p ──────────────────────────────────
+    sd_path = os.path.join(out_dir, f"{stem}_540p.mp4")
+    _scale_video(
+        native_path, sd_path, _SD_W, _SD_H, _SD_BITRATE,
+        ffmpeg_bin, ffmpeg_timeout,
+    )
 
     result = {
         "source_video": os.path.basename(input_path),
         "total_frames": total,
         "valid_frames": valid_count,
         "fail_frames": fail_count,
+        "native_crop": native_path,
+        "native_framedata": native_fd_path,
         "1080p_video": hd_path,
         "1080p_framedata": hd_fd_path,
         "540p_video": sd_path,
         "540p_framedata": sd_fd_path,
     }
 
-    # ── Step 8: Cut face clips ────────────────────────────────────────────────
+    # ── Step 10: Cut face clips from native (192×192 + 96×96, one pass) ───
     if produce_faceclip:
         hd_face_path = os.path.join(out_dir, f"{stem}_1080p_face.mp4")
-        logger.info("=== Cutting 1080p face clip (192x192) ===")
-        cut_face_video(
-            framedata_path=hd_fd_path,
-            video_path=hd_path,
-            output_path=hd_face_path,
-            output_size=192,
+        sd_face_path = os.path.join(out_dir, f"{stem}_540p_face.mp4")
+        logger.info("=== Cutting face clips from native (192x192 + 96x96) ===")
+        cut_face_clips_from_native(
+            native_framedata_path=native_fd_path,
+            native_video_path=native_path,
+            output_hd_path=hd_face_path,
+            output_sd_path=sd_face_path,
             ffmpeg_bin=ffmpeg_bin,
             ffmpeg_timeout=ffmpeg_timeout,
         )
         result["1080p_face_video"] = hd_face_path
-
-        sd_face_path = os.path.join(out_dir, f"{stem}_540p_face.mp4")
-        logger.info("=== Cutting 540p face clip (96x96) ===")
-        cut_face_video(
-            framedata_path=sd_fd_path,
-            video_path=sd_path,
-            output_path=sd_face_path,
-            output_size=96,
-            ffmpeg_bin=ffmpeg_bin,
-            ffmpeg_timeout=ffmpeg_timeout,
-        )
         result["540p_face_video"] = sd_face_path
 
     return result
@@ -201,53 +216,50 @@ def _probe_dimensions(path: str) -> tuple[int, int]:
     return w, h
 
 
-def _prepare_hd(
+def _crop_native(
     input_path: str,
     output_path: str,
     src_w: int,
     src_h: int,
-    out_w: int,
-    out_h: int,
     fps: int,
-    bitrate: str,
+    crf: int,
     ffmpeg_bin: str,
     timeout: int,
-) -> None:
-    """Center-crop to target aspect ratio and scale to out_w × out_h."""
-    target_ar = out_w / out_h  # 9/16
+) -> tuple[int, int]:
+    """Center-crop source to 9:16 at native resolution, lossless H264.
+
+    Returns (out_w, out_h) of the produced video.
+    """
+    target_ar = 9 / 16
 
     if src_w / src_h > target_ar:
-        # Source is wider → crop width, keep full height
         crop_h = src_h
-        crop_w = _even(round(src_h * out_w / out_h))
+        crop_w = _even(round(src_h * 9 / 16))
         x_off = (src_w - crop_w) // 2
         y_off = 0
     else:
-        # Source is taller or exact → crop height, keep full width
         crop_w = src_w
-        crop_h = _even(round(src_w * out_h / out_w))
+        crop_h = _even(round(src_w * 16 / 9))
         x_off = 0
         y_off = (src_h - crop_h) // 2
 
-    vf = (
-        f"crop={crop_w}:{crop_h}:{x_off}:{y_off},"
-        f"scale={out_w}:{out_h}:flags=lanczos"
-    )
+    vf = f"crop={crop_w}:{crop_h}:{x_off}:{y_off}"
     cmd = [
         ffmpeg_bin, "-y",
         "-i", input_path,
         "-vf", vf,
         "-r", str(fps),
-        "-c:v", "libx264", "-b:v", bitrate,
+        "-c:v", "libx264", "-crf", str(crf), "-preset", "ultrafast",
         "-pix_fmt", "yuv420p",
         "-an",
         output_path,
     ]
     logger.info(
-        "Crop %dx%d+%d+%d → scale %dx%d: %s",
-        crop_w, crop_h, x_off, y_off, out_w, out_h, output_path,
+        "Native crop %dx%d+%d+%d → %s (crf=%d)",
+        crop_w, crop_h, x_off, y_off, output_path, crf,
     )
     _run_ffmpeg(cmd, output_path, timeout)
+    return crop_w, crop_h
 
 
 def _scale_video(
@@ -312,12 +324,13 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="face-framedata-prepare",
         description=(
-            "Prepare a large clip to 1080p+540p portrait and generate framedata. "
+            "Prepare a large clip: native 9:16 crop → framedata → "
+            "1080p/540p videos + face clips. "
             "Input must be at least 1080 wide and 1920 tall."
         ),
     )
     parser.add_argument("--input", "-i", required=True,
-                        help="Source video (square or larger, e.g. 3800×3800)")
+                        help="Source video (square or larger, e.g. 3840×3840)")
     parser.add_argument("--output-dir", "-o", default="output",
                         help="Root output directory (default: output/)")
     parser.add_argument("--roi-top", type=float, default=_DEFAULT_ROI_TOP,
@@ -350,6 +363,8 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     print(f"\nDone:")
+    print(f"  native crop:     {report['native_crop']}")
+    print(f"  native framedata:{report['native_framedata']}")
     print(f"  1080p video:     {report['1080p_video']}")
     print(f"  1080p framedata: {report['1080p_framedata']}")
     print(f"  540p  video:     {report['540p_video']}")

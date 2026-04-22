@@ -136,6 +136,138 @@ def cut_face_video(
 
 
 # ---------------------------------------------------------------------------
+# Native-resolution face clip extraction (two sizes, one pass)
+# ---------------------------------------------------------------------------
+
+def cut_face_clips_from_native(
+    native_framedata_path: str,
+    native_video_path: str,
+    output_hd_path: str,
+    output_sd_path: str,
+    hd_size: int = 192,
+    sd_size: int = 96,
+    fps: int | None = None,
+    ffmpeg_bin: str = "ffmpeg",
+    ffmpeg_timeout: int = 300,
+) -> None:
+    """Cut face clips from native-resolution video producing two sizes in one pass.
+
+    Uses stretch_to_square_mean_width: a single reference_width (even-rounded
+    median of sw) is applied to every frame. Both output clips are produced
+    in a single read of the source video.
+
+    output_hd_path: hd_size × hd_size clip (default 192×192)
+    output_sd_path: sd_size × sd_size clip (default 96×96)
+    """
+    with open(native_framedata_path) as f:
+        framedata = json.load(f)
+
+    frames_by_idx: dict[int, dict] = {fr["i"]: fr for fr in framedata["frames"]}
+    total = framedata["total_frames"]
+
+    widths = [
+        float(fr.get("sw", fr["w"]))
+        for fr in framedata["frames"]
+        if "status" not in fr
+    ]
+    if not widths:
+        raise ValueError(f"No valid frames in {native_framedata_path}")
+    ref_w = max(2, int(round(float(np.median(widths)) / 2.0) * 2))
+
+    cap = cv2.VideoCapture(native_video_path)
+    native_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    native_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    src_fps = int(cap.get(cv2.CAP_PROP_FPS)) or 25
+    out_fps = fps if fps is not None else src_fps
+
+    # Crop window height in native space: same face region as hd_size rows at 1080p
+    crop_h_raw = round(hd_size * native_h / 1920)
+    crop_h = crop_h_raw if crop_h_raw % 2 == 0 else crop_h_raw - 1
+
+    def _make_pipe(out_path: str, size: int) -> subprocess.Popen:
+        cmd = [
+            ffmpeg_bin, "-y",
+            "-f", "rawvideo", "-pix_fmt", "bgr24",
+            "-s", f"{size}x{size}", "-r", str(out_fps),
+            "-i", "pipe:0",
+            "-c:v", "libx264", "-b:v", "1M",
+            "-pix_fmt", "yuv420p", "-an",
+            out_path,
+        ]
+        return subprocess.Popen(
+            cmd, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+    proc_hd = _make_pipe(output_hd_path, hd_size)
+    proc_sd = _make_pipe(output_sd_path, sd_size)
+
+    black_hd = np.zeros((hd_size, hd_size, 3), dtype=np.uint8)
+    black_sd = np.zeros((sd_size, sd_size, 3), dtype=np.uint8)
+
+    try:
+        for frame_idx in range(total):
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            meta = frames_by_idx.get(frame_idx)
+            if meta is None or "status" in meta:
+                proc_hd.stdin.write(black_hd.tobytes())
+                proc_sd.stdin.write(black_sd.tobytes())
+                continue
+
+            roll: float = float(meta.get("sroll", meta["roll"]))
+            cx: float = float(meta.get("scx", meta["cx"]))
+            cy: float = float(meta.get("scy", meta["cy"]))
+
+            M = cv2.getRotationMatrix2D(
+                (native_w / 2.0, native_h / 2.0), -roll, 1.0,
+            )
+            rotated = cv2.warpAffine(
+                frame, M, (native_w, native_h),
+                borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0),
+            )
+
+            patch = cv2.getRectSubPix(rotated, (ref_w, crop_h), (cx, cy))
+
+            proc_hd.stdin.write(
+                cv2.resize(patch, (hd_size, hd_size), interpolation=cv2.INTER_LINEAR).tobytes()
+            )
+            proc_sd.stdin.write(
+                cv2.resize(patch, (sd_size, sd_size), interpolation=cv2.INTER_LINEAR).tobytes()
+            )
+
+    except BrokenPipeError:
+        pass
+    finally:
+        cap.release()
+        for proc in (proc_hd, proc_sd):
+            try:
+                proc.stdin.close()
+            except OSError:
+                pass
+
+    errors: list[str] = []
+    for proc, out_path in ((proc_hd, output_hd_path), (proc_sd, output_sd_path)):
+        try:
+            proc.wait(timeout=ffmpeg_timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            raise RuntimeError(f"ffmpeg timed out for {out_path}")
+        stderr = proc.stderr.read() if proc.stderr else b""
+        if proc.returncode != 0:
+            errors.append(f"{out_path}: {stderr.decode()}")
+    if errors:
+        raise RuntimeError("ffmpeg failed:\n" + "\n".join(errors))
+
+    logger.info(
+        "Cut native face clips (%dx%d patch → %dx%d + %dx%d, %d frames)",
+        ref_w, crop_h, hd_size, hd_size, sd_size, sd_size, total,
+    )
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
