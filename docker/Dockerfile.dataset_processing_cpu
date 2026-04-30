@@ -1,5 +1,21 @@
 ARG BASE_IMAGE=python:3.11-slim-bookworm
 ARG UPDATE_BASE_IMAGE=semyonvlasov/dataset-processing-cpu:latest
+
+# ---------------------------------------------------------------------------
+# Code-only local update target. This is useful when a dependency-rich base
+# image already exists locally and Docker Hub is unavailable.
+# ---------------------------------------------------------------------------
+FROM ${UPDATE_BASE_IMAGE} AS update
+WORKDIR /workspace/repo
+COPY batch/ batch/
+COPY configs/ configs/
+COPY face_processing/ face_processing/
+COPY dataset_processing/ dataset_processing/
+ENV PYTHONPATH=/workspace/repo
+RUN printf '#!/bin/sh\nexec python -m dataset_processing.cli "$@"\n' > /usr/local/bin/dataset-processing && \
+    chmod +x /usr/local/bin/dataset-processing
+WORKDIR /data
+
 FROM ${BASE_IMAGE} AS full
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -41,19 +57,3 @@ RUN mkdir -p assets \
 
 RUN printf '#!/bin/sh\nexec python -m dataset_processing.cli "$@"\n' > /usr/local/bin/dataset-processing && \
     chmod +x /usr/local/bin/dataset-processing
-
-
-# ---------------------------------------------------------------------------
-# Code-only local update target. This is useful when a dependency-rich base
-# image already exists locally and Docker Hub is unavailable.
-# ---------------------------------------------------------------------------
-FROM ${UPDATE_BASE_IMAGE} AS update
-WORKDIR /workspace/repo
-COPY batch/ batch/
-COPY configs/ configs/
-COPY face_processing/ face_processing/
-COPY dataset_processing/ dataset_processing/
-ENV PYTHONPATH=/workspace/repo
-RUN printf '#!/bin/sh\nexec python -m dataset_processing.cli "$@"\n' > /usr/local/bin/dataset-processing && \
-    chmod +x /usr/local/bin/dataset-processing
-WORKDIR /data

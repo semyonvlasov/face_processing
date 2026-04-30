@@ -1,5 +1,24 @@
 ARG BASE_IMAGE=python:3.11-slim-bookworm
 ARG UPDATE_BASE_IMAGE=semyonvlasov/call-video-preparation:latest
+
+# ---------------------------------------------------------------------------
+# Code-only local update target. Use when call-video-preparation:latest already exists
+# locally and Docker Hub / model download is unavailable.
+# ---------------------------------------------------------------------------
+FROM ${UPDATE_BASE_IMAGE} AS update
+WORKDIR /workspace/repo
+COPY face_processing/ face_processing/
+COPY face_framedata/ face_framedata/
+COPY call_video_preparation/ call_video_preparation/
+ENV PYTHONPATH=/workspace/repo
+RUN printf '#!/bin/sh\nexec python -m call_video_preparation.prepare "$@"\n' > /usr/local/bin/call-video-preparation && \
+    printf '#!/bin/sh\nexec python -m call_video_preparation.cut "$@"\n'     > /usr/local/bin/call-video-cut && \
+    printf '#!/bin/sh\nexec python -m call_video_preparation.restore "$@"\n' > /usr/local/bin/call-video-restore && \
+    chmod +x /usr/local/bin/call-video-preparation \
+             /usr/local/bin/call-video-cut \
+             /usr/local/bin/call-video-restore
+WORKDIR /data
+
 FROM ${BASE_IMAGE} AS full
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -42,22 +61,3 @@ WORKDIR /data
 
 ENTRYPOINT []
 CMD ["bash"]
-
-
-# ---------------------------------------------------------------------------
-# Code-only local update target. Use when call-video-preparation:latest already exists
-# locally and Docker Hub / model download is unavailable.
-# ---------------------------------------------------------------------------
-FROM ${UPDATE_BASE_IMAGE} AS update
-WORKDIR /workspace/repo
-COPY face_processing/ face_processing/
-COPY face_framedata/ face_framedata/
-COPY call_video_preparation/ call_video_preparation/
-ENV PYTHONPATH=/workspace/repo
-RUN printf '#!/bin/sh\nexec python -m call_video_preparation.prepare "$@"\n' > /usr/local/bin/call-video-preparation && \
-    printf '#!/bin/sh\nexec python -m call_video_preparation.cut "$@"\n'     > /usr/local/bin/call-video-cut && \
-    printf '#!/bin/sh\nexec python -m call_video_preparation.restore "$@"\n' > /usr/local/bin/call-video-restore && \
-    chmod +x /usr/local/bin/call-video-preparation \
-             /usr/local/bin/call-video-cut \
-             /usr/local/bin/call-video-restore
-WORKDIR /data
