@@ -61,7 +61,7 @@ remote-docker-build:
 	@ssh $(SSH_OPTS) "$(REMOTE)" "\
 		set -euo pipefail; \
 		cd '$(REMOTE_ROOT)'; \
-		docker build -f docker/Dockerfile.cpu -t '$(DOCKER_IMAGE)' .; \
+		docker build -f docker/Dockerfile.dataset_processing_cpu -t '$(DOCKER_IMAGE)' .; \
 	"
 	@echo "remote-docker-build complete: $(REMOTE):$(DOCKER_IMAGE)"
 

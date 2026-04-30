@@ -27,7 +27,7 @@ mkdir -p "$DATA_ROOT/process/logs"
 
 if [ "$SKIP_BUILD" != "1" ]; then
   docker build \
-    -f "$REPO_ROOT/docker/Dockerfile.cpu" \
+    -f "$REPO_ROOT/docker/Dockerfile.dataset_processing_cpu" \
     -t "$IMAGE_TAG" \
     "$REPO_ROOT"
 fi
