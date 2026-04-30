@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Batch-export raw videos into ranked face segments using the vendored
-`face_processing` pipeline.
+Batch-export raw videos into ranked face segments using dataset_processing.
 
 Output layout:
   output_dir/
@@ -183,52 +182,36 @@ def _apply_mapping(target: object, mapping: dict[str, Any], section_name: str) -
         setattr(target, key, value)
 
 
-def build_face_processing_config(config_path: Path, config: dict[str, Any], output_dir: Path):
+def build_dataset_processing_config(config_path: Path, config: dict[str, Any], output_dir: Path):
+    del config_path
+    from dataset_processing.config import apply_dataset_config
     from face_processing.config import PipelineConfig
 
     pipeline_cfg = PipelineConfig()
+    dataset_mapping = dict(get_mapping(config, "dataset_processing"))
 
-    root_mapping = get_mapping(config, "face_processing")
-    normalization_mapping = dict(get_mapping(config, "face_processing", "normalization"))
-    detection_mapping = dict(get_mapping(config, "face_processing", "detection"))
-    bad_frame_mapping = dict(get_mapping(config, "face_processing", "bad_frame"))
-    ranking_mapping = dict(get_mapping(config, "face_processing", "ranking"))
-    stabilization_mapping = dict(get_mapping(config, "face_processing", "stabilization", default={}))
-    export_mapping = dict(get_mapping(config, "face_processing", "export"))
-
-    model_path = resolve_repo_path(REPO_ROOT, get_str(config, "face_processing", "detection", "model_path"))
+    model_path = resolve_repo_path(REPO_ROOT, get_str(config, "dataset_processing", "model_path"))
     assert model_path is not None
     if not model_path.is_file():
         raise ConfigError(
             f"missing MediaPipe face landmarker model: {model_path}. "
             "Place the .task file at the configured path before launching processing."
         )
-    detection_mapping["model_path"] = str(model_path)
+    dataset_mapping["model_path"] = str(model_path)
 
     ffmpeg_bin = resolve_ffmpeg_bin(get_str(config, "runtime", "ffmpeg_bin", allow_empty=True) or None)
     ffmpeg_threads = int(get_mapping(config, "runtime").get("ffmpeg_threads", 0))
     ffmpeg_timeout = int(get_mapping(config, "runtime").get("ffmpeg_timeout", 180))
 
-    normalization_codec = select_video_encoder(str(normalization_mapping.get("codec", "auto")), ffmpeg_bin)
-    export_codec = select_video_encoder(str(export_mapping.get("codec", "auto")), ffmpeg_bin)
-    normalization_mapping["codec"] = normalization_codec
-    export_mapping["codec"] = export_codec
-    normalization_mapping["ffmpeg_bin"] = ffmpeg_bin
-    normalization_mapping["ffmpeg_threads"] = ffmpeg_threads
-    normalization_mapping["ffmpeg_timeout"] = ffmpeg_timeout
-    export_mapping["ffmpeg_bin"] = ffmpeg_bin
-    export_mapping["ffmpeg_threads"] = ffmpeg_threads
-    export_mapping["ffmpeg_timeout"] = ffmpeg_timeout
+    normalization_codec = select_video_encoder(str(dataset_mapping.get("normalization_codec", "auto")), ffmpeg_bin)
+    export_codec = select_video_encoder(str(dataset_mapping.get("export_codec", "auto")), ffmpeg_bin)
+    dataset_mapping["normalization_codec"] = normalization_codec
+    dataset_mapping["export_codec"] = export_codec
+    dataset_mapping["ffmpeg_bin"] = ffmpeg_bin
+    dataset_mapping["ffmpeg_threads"] = ffmpeg_threads
+    dataset_mapping["ffmpeg_timeout"] = ffmpeg_timeout
 
-    _apply_mapping(pipeline_cfg.normalization, normalization_mapping, "face_processing.normalization")
-    _apply_mapping(pipeline_cfg.detection, detection_mapping, "face_processing.detection")
-    _apply_mapping(pipeline_cfg.bad_frame, bad_frame_mapping, "face_processing.bad_frame")
-    _apply_mapping(pipeline_cfg.ranking, ranking_mapping, "face_processing.ranking")
-    _apply_mapping(pipeline_cfg.stabilization, stabilization_mapping, "face_processing.stabilization")
-    _apply_mapping(pipeline_cfg.export, export_mapping, "face_processing.export")
-
-    pipeline_cfg.save_frame_log = get_bool(root_mapping, "save_frame_log")
-    pipeline_cfg.keep_normalized = get_bool(root_mapping, "keep_normalized")
+    apply_dataset_config(pipeline_cfg, dataset_mapping)
     pipeline_cfg.output_dir = str(output_dir)
     return pipeline_cfg, model_path
 
@@ -410,7 +393,7 @@ def process_one_video(
     work_root: Path,
     pipeline_cfg,
 ):
-    from face_processing.pipeline import process_video
+    from dataset_processing.pipeline import process_video
 
     source_name = video_path.stem
     pipeline_cfg.output_dir = str(work_root)
@@ -510,7 +493,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--normalized-dir",
         required=True,
-        help="Per-video temporary work root used by the inner face_processing pipeline",
+        help="Per-video temporary work root used by the inner dataset_processing pipeline",
     )
     parser.add_argument("--source-archive", default="", help="Source archive name for provenance")
     parser.add_argument("--dataset-kind", choices=["auto", "talkvid", "hdtf"], default="auto")
@@ -536,7 +519,7 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     work_root.mkdir(parents=True, exist_ok=True)
 
-    base_pipeline_cfg, model_path = build_face_processing_config(config_path, config, work_root)
+    base_pipeline_cfg, model_path = build_dataset_processing_config(config_path, config, work_root)
     dataset_kind = resolve_dataset_kind(args.dataset_kind, args.source_archive, input_dir)
     gpu_processing_clip_max_length_sec = float(
         get_mapping(config, "process", default={}).get("gpu_processing_clip_max_length_sec", 30.0)
@@ -700,7 +683,7 @@ def main() -> int:
 
     summary = {
         "ts": timestamp(),
-        "processor": "face_processing",
+        "processor": "dataset_processing",
         "config_path": str(config_path),
         "input_dir": str(input_dir),
         "output_dir": str(output_dir),

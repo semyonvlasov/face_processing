@@ -20,6 +20,7 @@ def compute_segment_metrics(
     pitches = np.array([abs(fd.pitch) for fd in fds])
     rolls = np.array([abs(fd.roll) for fd in fds])
     face_hs = np.array([fd.face_h for fd in fds])
+    face_ws = np.array([fd.face_w for fd in fds])
     cxs = np.array([fd.cx for fd in fds])
     cys = np.array([fd.cy for fd in fds])
 
@@ -35,6 +36,8 @@ def compute_segment_metrics(
 
     mean_face_h = float(np.mean(face_hs)) if n > 0 else 1.0
     std_face_h = float(np.std(face_hs)) if n > 1 else 0.0
+    mean_face_w = float(np.mean(face_ws)) if n > 0 else 1.0
+    std_face_w = float(np.std(face_ws)) if n > 1 else 0.0
 
     # Jump ratio: frames with frame_jumps reason / total
     jump_count = sum(1 for fd in fds if "frame_jumps" in fd.bad_reasons)
@@ -54,6 +57,9 @@ def compute_segment_metrics(
         mean_face_h=mean_face_h,
         min_face_h=float(np.min(face_hs)),
         face_size_std_ratio=std_face_h / mean_face_h if mean_face_h > 0 else 0.0,
+        mean_face_w=mean_face_w,
+        min_face_w=float(np.min(face_ws)),
+        face_width_std_ratio=std_face_w / mean_face_w if mean_face_w > 0 else 0.0,
         std_cx=float(np.std(cxs)),
         std_cy=float(np.std(cys)),
         eye_dist_std_ratio=float(np.std(eye_dists) / np.mean(eye_dists)) if eye_dists.size > 1 else 0.0,
@@ -87,6 +93,7 @@ def _meets_confident(m: SegmentMetrics, t: RankingThresholds, s: int) -> bool:
         and m.max_abs_pitch <= t.conf_max_abs_pitch
         and m.max_abs_roll <= t.conf_max_abs_roll
         and m.face_size_std_ratio <= t.conf_face_size_std_ratio
+        and m.face_width_std_ratio <= t.conf_face_width_std_ratio
         and m.std_cx <= t.conf_std_cx_ratio * s
         and m.std_cy <= t.conf_std_cy_ratio * s
         and m.eye_dist_std_ratio <= t.conf_eye_dist_std_ratio
@@ -106,6 +113,7 @@ def _meets_medium(m: SegmentMetrics, t: RankingThresholds, s: int) -> bool:
         and m.max_abs_pitch <= t.med_max_abs_pitch
         and m.max_abs_roll <= t.med_max_abs_roll
         and m.face_size_std_ratio <= t.med_face_size_std_ratio
+        and m.face_width_std_ratio <= t.med_face_width_std_ratio
         and m.std_cx <= t.med_std_cx_ratio * s
         and m.std_cy <= t.med_std_cy_ratio * s
         and m.eye_dist_std_ratio <= t.med_eye_dist_std_ratio

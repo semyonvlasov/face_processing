@@ -12,7 +12,7 @@ DROP_REASON_PRIORITY = [
     "head_pose_extreme",
     "face_missing_or_tracking_lost",
     "frame_jumps",
-    "strong_face_zoom_in_out",
+    "strong_face_scale_change",
     "excessive_face_motion",
     "face_too_small",
     "multiple_faces",
@@ -128,10 +128,16 @@ def classify_frames(
                 if jump:
                     reasons.append("frame_jumps")
 
-            # --- strong zoom in/out ---
+            # --- strong scale change ---
+            scale_changed = False
             if fd.face_h_ratio is not None:
                 if abs(fd.face_h_ratio - 1.0) > thresholds.max_face_h_ratio_deviation:
-                    reasons.append("strong_face_zoom_in_out")
+                    scale_changed = True
+            if fd.face_w_ratio is not None:
+                if abs(fd.face_w_ratio - 1.0) > thresholds.max_face_w_ratio_deviation:
+                    scale_changed = True
+            if scale_changed:
+                reasons.append("strong_face_scale_change")
 
         # --- excessive face motion (already marked) ---
         if getattr(fd, "_excessive_motion", False):

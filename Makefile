@@ -10,8 +10,8 @@ MODEL_PATH ?= $(CURDIR)/assets/face_landmarker_v2_with_blendshapes.task
 REMOTE_RCLONE_CONFIG ?= /root/.config/rclone/rclone.conf
 REMOTE_MODEL_PATH ?= $(REMOTE_ROOT)/assets/face_landmarker_v2_with_blendshapes.task
 
-DOCKER_IMAGE ?= face-processing-cpu:latest
-DOCKER_CONTAINER ?= face-processing-cpu
+DOCKER_IMAGE ?= dataset-processing-cpu:latest
+DOCKER_CONTAINER ?= dataset-processing-cpu
 DOCKER_DATA_ROOT ?= /root/.cache/face_processing/process-docker
 DOCKER_CONFIG_PATH ?= configs/gdrive_container_cpu.yaml
 DOCKER_LAUNCHER_LOG ?= $(DOCKER_DATA_ROOT)/launcher.log

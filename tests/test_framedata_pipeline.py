@@ -1,10 +1,10 @@
-"""End-to-end test for the face_framedata pipeline.
+"""End-to-end test for the call_video_preparation internals.
 
-Analogous to the manual base-pipeline test:
-  face-processing  →  face-processing-restore
+Analogous to the manual dataset pipeline test:
+  dataset-processing  →  dataset-processing-restore
 
 This test runs:
-  face-framedata   →  face-framedata-cut  →  face-framedata-restore
+  call-video-preparation internals  →  call-video-cut  →  call-video-restore
 
 Usage:
     python tests/test_framedata_pipeline.py
@@ -35,7 +35,7 @@ def _find_test_videos() -> list[tuple[str, str]]:
         # Original source videos (if present)
         (os.path.join(_REPO_ROOT, "test_sample", "portrait_avatar.mp4"), "portrait_avatar"),
         (os.path.join(_REPO_ROOT, "test_sample", "portrait_rama.mp4"),   "portrait_rama"),
-        # Fallback: normalized videos from a previous face-processing run
+        # Fallback: normalized videos from a previous dataset-processing run
         (os.path.join(_REPO_ROOT, "output_test", "portrait_avatar", "normalized.mp4"), "portrait_avatar"),
         (os.path.join(_REPO_ROOT, "output_test", "portrait_rama",   "normalized.mp4"), "portrait_rama"),
     ]

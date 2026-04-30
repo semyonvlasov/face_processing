@@ -1,0 +1,10 @@
+call_video_preparation:
+  model_path: assets/face_landmarker_v2_with_blendshapes.task
+  num_faces: 2
+  min_detection_confidence: 0.85
+  min_presence_confidence: 0.85
+  use_gpu: false
+  roi_top: 0.1
+  roi_bottom: 0.4
+  produce_faceclip: true
+  keep_native: false

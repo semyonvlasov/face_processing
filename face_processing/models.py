@@ -78,6 +78,9 @@ class SegmentMetrics:
     mean_face_h: float = 0.0
     min_face_h: float = 0.0
     face_size_std_ratio: float = 0.0
+    mean_face_w: float = 0.0
+    min_face_w: float = 0.0
+    face_width_std_ratio: float = 0.0
     std_cx: float = 0.0
     std_cy: float = 0.0
     eye_dist_std_ratio: float = 0.0
@@ -98,6 +101,9 @@ class SegmentMetrics:
             "mean_face_h": round(self.mean_face_h, 1),
             "min_face_h": round(self.min_face_h, 1),
             "face_size_std_ratio": round(self.face_size_std_ratio, 4),
+            "mean_face_w": round(self.mean_face_w, 1),
+            "min_face_w": round(self.min_face_w, 1),
+            "face_width_std_ratio": round(self.face_width_std_ratio, 4),
             "std_cx": round(self.std_cx, 2),
             "std_cy": round(self.std_cy, 2),
             "eye_dist_std_ratio": round(self.eye_dist_std_ratio, 4),
@@ -121,10 +127,12 @@ class Segment:
     rank: str | None = None
 
     output_size: int | None = None
+    reference_crop_w: int | None = None
+    reference_crop_h: int | None = None
     status: str = "pending"  # "exported" / "dropped"
     drop_reason: str | None = None
 
-    def to_dict(self, source_video: str = "", export_mode: str = "stretch_to_square") -> dict:
+    def to_dict(self, source_video: str = "", export_mode: str = "median_face_rect") -> dict:
         d: dict[str, Any] = {
             "source_video": source_video,
             "segment_id": self.segment_id,
@@ -135,6 +143,8 @@ class Segment:
             "rank": self.rank,
             "drop_reason": self.drop_reason,
             "output_size": self.output_size,
+            "reference_crop_w": self.reference_crop_w,
+            "reference_crop_h": self.reference_crop_h,
             "export_mode": export_mode,
         }
         if self.metrics is not None:

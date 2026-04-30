@@ -7,10 +7,10 @@ Pipeline:
   4. Scale native framedata → 1080p and 540p by proportional coordinate scaling.
   5. Scale native crop → 1080×1920 @ 8 Mbps and 540×960 @ 4 Mbps.
   6. Cut face clips from native video: 192×192 and 96×96 in one pass
-     using stretch_to_square_mean_width (median face width).
+     using median smoothed face width and height.
 
 Usage:
-    face-framedata-prepare --input clip.mp4 --output-dir output/
+    call-video-preparation --input clip.mp4 --output-dir output/
 """
 from __future__ import annotations
 
@@ -336,7 +336,7 @@ def _even(n: int) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="face-framedata-prepare",
+        prog="call-video-preparation",
         description=(
             "Prepare a large clip: native 9:16 crop → framedata → "
             "1080p/540p videos + face clips. "

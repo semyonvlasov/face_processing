@@ -264,14 +264,15 @@ Reason:
 This is a softer motion criterion accumulated across a segment, not only a single-frame jump.
 It is triggered when the face center moves too much over time even if no single jump exceeds the frame-jump threshold.
 
-### 10.7 Strong zoom in / zoom out
+### 10.7 Strong face scale change
 Reason:
-- `strong_face_zoom_in_out`
+- `strong_face_scale_change`
 
 Recommended starting threshold:
 - `abs(face_h_ratio - 1.0) > 0.12`
+- `abs(face_w_ratio - 1.0) > 0.12`
 
-This covers abrupt change of face scale between adjacent frames.
+This covers abrupt height or width changes between adjacent frames.
 
 ---
 
@@ -338,7 +339,7 @@ If several reasons are possible, the system must output **one primary reason** u
 2. `head_pose_extreme`
 3. `face_missing_or_tracking_lost`
 4. `frame_jumps`
-5. `strong_face_zoom_in_out`
+5. `strong_face_scale_change`
 6. `excessive_face_motion`
 7. `face_too_small`
 8. `multiple_faces`
@@ -362,7 +363,9 @@ For each segment compute:
 - `mean_abs_pitch`, `max_abs_pitch`
 - `mean_abs_roll`, `max_abs_roll`
 - `mean_face_h`, `min_face_h`
+- `mean_face_w`, `min_face_w`
 - `std_face_h / mean_face_h`
+- `std_face_w / mean_face_w`
 - `std_cx`, `std_cy`
 - `jump_ratio`
 - `missing_ratio`
@@ -378,6 +381,7 @@ For each segment compute:
 - `max_abs_pitch <= 16°`
 - `max_abs_roll <= 12°`
 - `std_face_h / mean_face_h <= 0.08`
+- `std_face_w / mean_face_w <= 0.08`
 - `std_cx <= 0.04 * output_reference_size`
 - `std_cy <= 0.04 * output_reference_size`
 - `jump_ratio <= 0.02`
@@ -391,6 +395,7 @@ For each segment compute:
 - `max_abs_pitch <= 20°`
 - `max_abs_roll <= 18°`
 - `std_face_h / mean_face_h <= 0.15`
+- `std_face_w / mean_face_w <= 0.15`
 - `std_cx <= 0.08 * output_reference_size`
 - `std_cy <= 0.08 * output_reference_size`
 - `jump_ratio <= 0.08`
@@ -403,12 +408,15 @@ Exportable segment that does not satisfy `confident` or `medium`, but still pass
 
 ## 15. Output video geometry
 
-### 15.1 Segment-level reference size
+### 15.1 Segment-level reference geometry
 For each exportable segment, compute:
 
-- `S = min(face_h_rotated_good_frames)`
+- `reference_crop_w = median(face_w_rotated_good_frames)`
+- `reference_crop_h = median(face_h_rotated_good_frames)`
+- `S = reference_crop_h`
 
 Where:
+- `face_w_rotated_good_frames` is the face width measured on the rotated, valid frames of that segment.
 - `face_h_rotated_good_frames` is the face height measured on the rotated, valid frames of that segment.
 
 The output segment resolution must be:
@@ -418,31 +426,23 @@ The output segment resolution must be:
 ### 15.2 Crop logic
 For each valid frame in the segment:
 1. use the roll-corrected frame;
-2. define the face crop around the rotated face;
-3. normalize the crop to square output size `S x S`.
+2. define a `reference_crop_w x reference_crop_h` crop around the rotated face;
+3. resize that reference rectangle to square output size `S x S`.
 
 ### 15.3 Required export mode
-Per user requirement, the pipeline must support **horizontal stretch to square**:
+Per user requirement, the dataset pipeline must use **median face rectangle export**:
 
 - the output is always square;
-- side length = minimal face-frame height `S`;
-- width may be non-isotropically rescaled to match the square.
+- side length = median rotated face height `S`;
+- crop width = median rotated face width;
+- crop height = median rotated face height.
 
 This mode must be named:
 
-- `stretch_to_square`
+- `median_face_rect`
 
 ### 15.4 Recommended optional mode
-For future compatibility, the pipeline may also support:
-
-- `pad_to_square`
-
-In this mode:
-- aspect ratio is preserved;
-- missing width or height is filled by padding.
-
-Default for this specification:
-- `stretch_to_square`
+No alternate dataset export mode is required.
 
 ---
 
@@ -475,7 +475,9 @@ Example:
   "rank": "medium",
   "drop_reason": null,
   "output_size": 312,
-  "export_mode": "stretch_to_square",
+  "reference_crop_w": 296,
+  "reference_crop_h": 312,
+  "export_mode": "median_face_rect",
   "metrics": {
     "mean_abs_yaw": 9.8,
     "mean_abs_pitch": 6.2,
@@ -543,12 +545,12 @@ The implementation is accepted if it satisfies all of the following:
    - low face confidence,
    - extreme head pose,
    - frame jumps,
-   - strong zoom in/out;
+   - strong face scale changes;
 4. the video is split into continuous good segments;
 5. segments shorter than **50 frames** are never exported;
 6. exported segments are rotated by `-roll` before crop;
-7. exported videos are square with side length equal to the **minimum rotated face height** of the segment;
-8. export mode `stretch_to_square` is supported;
+7. exported videos are square with side length equal to the **median rotated face height** of the segment;
+8. export mode `median_face_rect` is supported;
 9. each exported segment has rank `confident`, `medium`, or `unconfident`;
 10. each dropped video has exactly one primary reason.
 

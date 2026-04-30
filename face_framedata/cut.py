@@ -2,9 +2,8 @@
 
 For each frame the pipeline:
   1. Rotates the full frame by -roll around its center.
-  2. Extracts a fixed output_size × output_size square centered at (cx, cy)
-     using cv2.getRectSubPix — same as pad_to_square in crop_export.
-  3. Writes the S×S crop directly (no aspect-ratio stretching).
+  2. Extracts a fixed median(sw) × median(sh) rectangle centered at (cx, cy).
+  3. Resizes that rectangle to the requested S×S face clip.
 
 Fail frames (no face detected) are written as black frames so the output
 video stays in sync with the source frame indices.
@@ -46,17 +45,8 @@ def cut_face_video(
     frames_by_idx: dict[int, dict] = {fr["i"]: fr for fr in framedata["frames"]}
     total = framedata["total_frames"]
 
-    # Compute output_size = floor(min face height) across valid frames,
-    # rounded down to even — same logic as crop_export.compute_output_size.
-    if output_size is None:
-        valid_heights = [fr["h"] for fr in framedata["frames"] if "status" not in fr]
-        if not valid_heights:
-            raise ValueError(f"No valid frames in {framedata_path}")
-        S = max(2, int(min(valid_heights)))
-        if S % 2:
-            S -= 1
-    else:
-        S = output_size
+    ref_w, ref_h = _reference_crop_size(framedata["frames"], framedata_path)
+    S = output_size if output_size is not None else ref_h
 
     cap = cv2.VideoCapture(video_path)
     frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -104,8 +94,8 @@ def cut_face_video(
                 borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0),
             )
 
-            # Fixed S×S square centered on face — matches pad_to_square export
-            crop = cv2.getRectSubPix(rotated, (S, S), (cx, cy))
+            patch = cv2.getRectSubPix(rotated, (ref_w, ref_h), (cx, cy))
+            crop = cv2.resize(patch, (S, S), interpolation=cv2.INTER_LINEAR)
 
             proc.stdin.write(crop.tobytes())
 
@@ -131,7 +121,10 @@ def cut_face_video(
             f"ffmpeg failed (code {proc.returncode}):\n{stderr.decode()}"
         )
 
-    logger.info("Cut face video (%dx%d, %d frames) -> %s", S, S, total, output_path)
+    logger.info(
+        "Cut face video (%dx%d patch -> %dx%d, %d frames) -> %s",
+        ref_w, ref_h, S, S, total, output_path,
+    )
     return S
 
 
@@ -152,9 +145,9 @@ def cut_face_clips_from_native(
 ) -> None:
     """Cut face clips from native-resolution video producing two sizes in one pass.
 
-    Uses stretch_to_square_mean_width: a single reference_width (even-rounded
-    median of sw) is applied to every frame. Both output clips are produced
-    in a single read of the source video.
+    Uses a single reference crop rectangle: even-rounded median(sw) ×
+    median(sh). Both output clips are produced in a single read of the source
+    video.
 
     output_hd_path: hd_size × hd_size clip (default 192×192)
     output_sd_path: sd_size × sd_size clip (default 96×96)
@@ -165,24 +158,13 @@ def cut_face_clips_from_native(
     frames_by_idx: dict[int, dict] = {fr["i"]: fr for fr in framedata["frames"]}
     total = framedata["total_frames"]
 
-    widths = [
-        float(fr.get("sw", fr["w"]))
-        for fr in framedata["frames"]
-        if "status" not in fr
-    ]
-    if not widths:
-        raise ValueError(f"No valid frames in {native_framedata_path}")
-    ref_w = max(2, int(round(float(np.median(widths)) / 2.0) * 2))
+    ref_w, ref_h = _reference_crop_size(framedata["frames"], native_framedata_path)
 
     cap = cv2.VideoCapture(native_video_path)
     native_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     native_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     src_fps = int(cap.get(cv2.CAP_PROP_FPS)) or 25
     out_fps = fps if fps is not None else src_fps
-
-    # Crop window height in native space: same face region as hd_size rows at 1080p
-    crop_h_raw = round(hd_size * native_h / 1920)
-    crop_h = crop_h_raw if crop_h_raw % 2 == 0 else crop_h_raw - 1
 
     def _make_pipe(out_path: str, size: int) -> subprocess.Popen:
         cmd = [
@@ -229,7 +211,7 @@ def cut_face_clips_from_native(
                 borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0),
             )
 
-            patch = cv2.getRectSubPix(rotated, (ref_w, crop_h), (cx, cy))
+            patch = cv2.getRectSubPix(rotated, (ref_w, ref_h), (cx, cy))
 
             proc_hd.stdin.write(
                 cv2.resize(patch, (hd_size, hd_size), interpolation=cv2.INTER_LINEAR).tobytes()
@@ -263,8 +245,20 @@ def cut_face_clips_from_native(
 
     logger.info(
         "Cut native face clips (%dx%d patch → %dx%d + %dx%d, %d frames)",
-        ref_w, crop_h, hd_size, hd_size, sd_size, sd_size, total,
+        ref_w, ref_h, hd_size, hd_size, sd_size, sd_size, total,
     )
+
+
+def _reference_crop_size(frames: list[dict], source: str) -> tuple[int, int]:
+    widths = [float(fr.get("sw", fr["w"])) for fr in frames if "status" not in fr]
+    heights = [float(fr.get("sh", fr["h"])) for fr in frames if "status" not in fr]
+    if not widths or not heights:
+        raise ValueError(f"No valid frames in {source}")
+    return _even_round(float(np.median(widths))), _even_round(float(np.median(heights)))
+
+
+def _even_round(value: float) -> int:
+    return max(2, int(round(value / 2.0) * 2))
 
 
 # ---------------------------------------------------------------------------
@@ -273,17 +267,17 @@ def cut_face_clips_from_native(
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="face-framedata-cut",
+        prog="call-video-cut",
         description="Extract face crops from a normalized video using framedata JSON.",
     )
     parser.add_argument("--framedata", "-d", required=True,
-                        help="Path to *_framedata.json produced by face-framedata")
+                        help="Path to framedata JSON produced by call-video-preparation")
     parser.add_argument("--normalized", "-n", required=True,
                         help="Normalized source video (keep with --keep-normalized)")
     parser.add_argument("--output", "-o", required=True,
                         help="Output face video path (.mp4)")
     parser.add_argument("--output-size", type=int, default=None,
-                        help="Override output square size S (default: min face height)")
+                        help="Override output square size S (default: median smoothed face height)")
     parser.add_argument("--verbose", "-v", action="store_true")
 
     args = parser.parse_args(argv)

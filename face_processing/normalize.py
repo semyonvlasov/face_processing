@@ -17,7 +17,7 @@ def normalize_video(
         config = NormalizationConfig()
 
     cmd = [
-        "ffmpeg",
+        config.ffmpeg_bin,
         "-y",
         "-i", input_path,
         "-r", str(config.fps),
@@ -27,6 +27,8 @@ def normalize_video(
         "-an",
         output_path,
     ]
+    if config.ffmpeg_threads and config.ffmpeg_threads > 0:
+        cmd[1:1] = ["-threads", str(int(config.ffmpeg_threads))]
     logger.info("Normalizing: %s", " ".join(cmd))
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

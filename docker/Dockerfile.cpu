@@ -1,4 +1,6 @@
-FROM python:3.11-slim-bookworm
+ARG BASE_IMAGE=python:3.11-slim-bookworm
+ARG UPDATE_BASE_IMAGE=semyonvlasov/dataset-processing-cpu:latest
+FROM ${BASE_IMAGE} AS full
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
@@ -13,6 +15,7 @@ RUN apt-get update \
         libgles2 \
         libsndfile1 \
         rclone \
+        wget \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /tmp/bootstrap
@@ -23,3 +26,34 @@ RUN python3 -m pip install --upgrade pip \
     && python3 -m pip install -r /tmp/bootstrap/requirements-docker.txt
 
 WORKDIR /workspace/repo
+
+COPY pyproject.toml /workspace/repo/pyproject.toml
+COPY batch/ batch/
+COPY configs/ configs/
+COPY face_processing/ face_processing/
+COPY dataset_processing/ dataset_processing/
+
+ENV PYTHONPATH=/workspace/repo
+
+RUN mkdir -p assets \
+    && wget -q -O assets/face_landmarker_v2_with_blendshapes.task \
+       "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+
+RUN printf '#!/bin/sh\nexec python -m dataset_processing.cli "$@"\n' > /usr/local/bin/dataset-processing && \
+    chmod +x /usr/local/bin/dataset-processing
+
+
+# ---------------------------------------------------------------------------
+# Code-only local update target. This is useful when a dependency-rich base
+# image already exists locally and Docker Hub is unavailable.
+# ---------------------------------------------------------------------------
+FROM ${UPDATE_BASE_IMAGE} AS update
+WORKDIR /workspace/repo
+COPY batch/ batch/
+COPY configs/ configs/
+COPY face_processing/ face_processing/
+COPY dataset_processing/ dataset_processing/
+ENV PYTHONPATH=/workspace/repo
+RUN printf '#!/bin/sh\nexec python -m dataset_processing.cli "$@"\n' > /usr/local/bin/dataset-processing && \
+    chmod +x /usr/local/bin/dataset-processing
+WORKDIR /data

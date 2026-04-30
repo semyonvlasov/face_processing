@@ -7,8 +7,8 @@ For each frame:
     is still blended back rather than left as the original.
 
 The inverse transform mirrors cut.py exactly:
-  1. The face video contains S×S frames (cut with getRectSubPix — no stretching).
-  2. Compute affine corners in the rotated frame centered at (cx, cy).
+  1. The face video contains S×S frames resized from median(sw)×median(sh).
+  2. Resize S×S back to that reference rectangle.
   3. Rotate corners back by +roll → original frame coordinates.
   4. warpAffine + feathered alpha-blend.
 """
@@ -47,11 +47,12 @@ def restore_video(
     total = framedata["total_frames"]
     frames_list: list[dict] = framedata["frames"]
 
-    # reference_width: even-rounded median of smoothed face widths (stretch_to_square_mean_width)
     widths = [float(fr.get("sw", fr["w"])) for fr in frames_list if "status" not in fr]
-    if not widths:
+    heights = [float(fr.get("sh", fr["h"])) for fr in frames_list if "status" not in fr]
+    if not widths or not heights:
         raise ValueError(f"No valid frames in {framedata_path}")
     ref_w = max(2, int(round(float(np.median(widths)) / 2.0) * 2))
+    ref_h = max(2, int(round(float(np.median(heights)) / 2.0) * 2))
 
     # Build per-frame geometry arrays with linear interpolation for fail frames.
     geom = _build_interpolated_geometry(frames_list, total)
@@ -96,12 +97,11 @@ def restore_video(
 
             roll, cx, cy, w, h = g
 
-            # Undo stretch_to_square_mean_width: resize S×S → (ref_w × S), then warp
-            crop_h = S
-            unscaled = cv2.resize(face_crop, (ref_w, crop_h), interpolation=cv2.INTER_LINEAR)
+            # Undo cut: resize S×S → median(sw) × median(sh), then warp.
+            unscaled = cv2.resize(face_crop, (ref_w, ref_h), interpolation=cv2.INTER_LINEAR)
             restored = warp_face_into_frame(
                 frame_orig, unscaled, roll,
-                ref_w, crop_h, frame_w, frame_h,
+                ref_w, ref_h, frame_w, frame_h,
                 cx, cy,
             )
             proc.stdin.write(restored.tobytes())
@@ -183,13 +183,13 @@ def _build_interpolated_geometry(
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="face-framedata-restore",
+        prog="call-video-restore",
         description="Restore a processed face video back into the source using framedata JSON.",
     )
     parser.add_argument("--framedata", "-d", required=True,
                         help="Path to *_framedata.json")
     parser.add_argument("--face-video", "-f", required=True,
-                        help="Processed face video (output of face-framedata-cut + inference)")
+                        help="Processed face video (output of call-video-cut + inference)")
     parser.add_argument("--normalized", "-n", required=True,
                         help="Normalized source video")
     parser.add_argument("--output", "-o", required=True,

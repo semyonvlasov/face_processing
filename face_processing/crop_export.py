@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import logging
-import math
 import subprocess
 
 import cv2
 import numpy as np
 
-from face_processing.config import ExportConfig, StabilizationConfig
+from face_processing.config import ExportConfig
 from face_processing.geometry import compute_raw_crop_geometry, rotate_landmarks
 from face_processing.models import FrameData, Segment
 
@@ -16,6 +15,7 @@ logger = logging.getLogger(__name__)
 LEFT_EYE_INDICES = (33, 133, 159, 145, 158, 153, 160, 144)
 RIGHT_EYE_INDICES = (362, 263, 386, 374, 385, 380, 387, 373)
 MOUTH_INDICES = (13, 14, 61, 291, 78, 308)
+SCALE_OUTLIER_THRESHOLD_RATIO = 0.04
 
 
 def compute_output_size(
@@ -23,32 +23,23 @@ def compute_output_size(
     frame_w: int,
     frame_h: int,
 ) -> int:
-    """Compute S = min(face_h) measured on roll-corrected landmarks.
+    """Compute output square size from median tilt-aware face height.
 
-    No video I/O — rotates landmarks mathematically using existing pose data.
+    Dataset exports crop a median-width by median-height face rectangle and
+    resize it to a square. The square side is the segment median face height.
     """
-    min_face_h = float("inf")
+    heights: list[float] = []
 
     for fd in segment.frame_data:
         if fd.landmarks is None:
             continue
+        geom = compute_raw_crop_geometry(fd, frame_w, frame_h)
+        if geom is not None:
+            heights.append(geom[3])
 
-        lmks_px = fd.landmarks.copy()
-        lmks_px[:, 0] *= frame_w
-        lmks_px[:, 1] *= frame_h
-
-        roll = fd.roll if fd.pose_valid else 0.0
-        rotated_lmks = rotate_landmarks(lmks_px[:, :2], -roll, frame_w, frame_h)
-
-        ys = rotated_lmks[:, 1]
-        face_h_rot = float(np.max(ys) - np.min(ys))
-        if face_h_rot < min_face_h:
-            min_face_h = face_h_rot
-
-    S = max(1, int(min_face_h))
-    if S % 2 != 0:
-        S -= 1
-    return S
+    if not heights:
+        return 2
+    return _even_round(float(np.median(heights)))
 
 
 def export_segment(
@@ -60,14 +51,13 @@ def export_segment(
     output_size: int,
     config: ExportConfig | None = None,
     source_video_path: str | None = None,
-    use_stabilized_crop: bool = False,
 ) -> str:
     """Export a segment as a square face video.
 
     For each frame:
     1. Rotate by -roll
     2. Compute crop around rotated face
-    3. Resize to output_size x output_size (stretch_to_square)
+    3. Resize the median reference face rectangle to output_size x output_size
     4. Pipe to ffmpeg
     """
     if config is None:
@@ -130,7 +120,7 @@ def export_segment(
 
             roll = fd.roll if fd.pose_valid else 0.0
             cropped = _crop_face_rotated(
-                frame_bgr, fd, roll, frame_w, frame_h, S, config.mode, use_stabilized_crop=use_stabilized_crop,
+                frame_bgr, fd, roll, frame_w, frame_h, S,
             )
             assert cropped.shape == (S, S, 3), f"Bad crop shape {cropped.shape}, expected ({S},{S},3)"
             proc.stdin.write(cropped.tobytes())
@@ -168,10 +158,8 @@ def _crop_face_rotated(
     frame_w: int,
     frame_h: int,
     S: int,
-    mode: str,
-    use_stabilized_crop: bool = False,
 ) -> np.ndarray:
-    """Rotate frame by -roll, crop face region, resize to SxS."""
+    """Rotate frame by -roll, crop the segment reference face rect, resize to SxS."""
     # Rotation center at frame center
     center = (frame_w / 2.0, frame_h / 2.0)
     M = cv2.getRotationMatrix2D(center, -roll, 1.0)
@@ -180,7 +168,7 @@ def _crop_face_rotated(
         borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0),
     )
 
-    if use_stabilized_crop and fd.crop_cx_rot is not None and fd.crop_w_rot is not None:
+    if fd.crop_cx_rot is not None and fd.crop_w_rot is not None:
         cx_rot = fd.crop_cx_rot
         cy_rot = fd.crop_cy_rot if fd.crop_cy_rot is not None else fd.cy
         face_w_rot = fd.crop_w_rot
@@ -195,30 +183,18 @@ def _crop_face_rotated(
             geom = compute_raw_crop_geometry(fd, frame_w, frame_h)
             cx_rot, cy_rot, face_w_rot, face_h_rot = geom if geom is not None else (fd.cx, fd.cy, fd.face_w, fd.face_h)
 
-    if mode == "stretch_to_square":
-        crop = _extract_crop_stretch(rotated, cx_rot, cy_rot, face_w_rot, S, frame_w, frame_h)
-    else:
-        # pad_to_square
-        crop = _extract_crop_pad(rotated, cx_rot, cy_rot, face_w_rot, face_h_rot, S, frame_w, frame_h)
-
-    return crop
+    return _extract_reference_crop(rotated, cx_rot, cy_rot, face_w_rot, face_h_rot, S, frame_w, frame_h)
 
 
 def prepare_segment_crop_geometry(
     segment: Segment,
     frame_w: int,
     frame_h: int,
-    stabilization: StabilizationConfig | None = None,
 ) -> None:
-    if stabilization is None:
-        stabilization = StabilizationConfig()
-
     raw_cx: list[float] = []
     raw_cy: list[float] = []
     raw_w: list[float] = []
     raw_h: list[float] = []
-    eye_dists: list[float] = []
-    eye_mouth_dists: list[float] = []
     valid: list[bool] = []
 
     for fd in segment.frame_data:
@@ -227,13 +203,20 @@ def prepare_segment_crop_geometry(
             raw_cy.append(float("nan"))
             raw_w.append(float("nan"))
             raw_h.append(float("nan"))
-            eye_dists.append(float("nan"))
-            eye_mouth_dists.append(float("nan"))
             valid.append(False)
             continue
 
         roll = fd.roll if fd.pose_valid else 0.0
-        cx_rot, cy_rot, face_w_rot, face_h_rot = compute_raw_crop_geometry(fd, frame_w, frame_h)
+        geom = compute_raw_crop_geometry(fd, frame_w, frame_h)
+        if geom is None:
+            raw_cx.append(float("nan"))
+            raw_cy.append(float("nan"))
+            raw_w.append(float("nan"))
+            raw_h.append(float("nan"))
+            valid.append(False)
+            continue
+
+        cx_rot, cy_rot, face_w_rot, face_h_rot = geom
         fd.raw_crop_cx_rot = cx_rot
         fd.raw_crop_cy_rot = cy_rot
         fd.raw_crop_w_rot = face_w_rot
@@ -247,98 +230,48 @@ def prepare_segment_crop_geometry(
         raw_cy.append(cy_rot)
         raw_w.append(face_w_rot)
         raw_h.append(face_h_rot)
-        eye_dists.append(eye_dist)
-        eye_mouth_dists.append(eye_mouth_dist)
         valid.append(True)
 
     raw_cx_arr = np.array(raw_cx, dtype=np.float64)
     raw_cy_arr = np.array(raw_cy, dtype=np.float64)
     raw_w_arr = np.array(raw_w, dtype=np.float64)
     raw_h_arr = np.array(raw_h, dtype=np.float64)
-    eye_dist_arr = np.array(eye_dists, dtype=np.float64)
-    eye_mouth_arr = np.array(eye_mouth_dists, dtype=np.float64)
     valid_arr = np.array(valid, dtype=bool)
-
-    stable_cx = raw_cx_arr.copy()
-    stable_cy = raw_cy_arr.copy()
-    stable_w = raw_w_arr.copy()
-    stable_h = raw_h_arr.copy()
 
     if np.any(valid_arr):
         median_face_w = float(np.nanmedian(raw_w_arr[valid_arr]))
         median_face_h = float(np.nanmedian(raw_h_arr[valid_arr]))
-        median_eye_dist = float(np.nanmedian(eye_dist_arr[valid_arr]))
-        median_eye_mouth = float(np.nanmedian(eye_mouth_arr[valid_arr]))
+        ref_w = _even_round(median_face_w)
+        ref_h = _even_round(median_face_h)
+        segment.reference_crop_w = ref_w
+        segment.reference_crop_h = ref_h
+        segment.output_size = ref_h
+    else:
+        segment.reference_crop_w = 2
+        segment.reference_crop_h = 2
+        segment.output_size = 2
 
-        anchor_scale = raw_w_arr.copy()
-        if median_eye_dist > 0 and median_eye_mouth > 0:
-            rel_scale = 0.5 * (
-                np.divide(eye_dist_arr, median_eye_dist, out=np.ones_like(eye_dist_arr), where=eye_dist_arr > 0)
-                + np.divide(
-                    eye_mouth_arr,
-                    median_eye_mouth,
-                    out=np.ones_like(eye_mouth_arr),
-                    where=eye_mouth_arr > 0,
-                )
-            )
-            anchor_scale = median_face_w * rel_scale
-
-        stable_cx = _smooth_valid_series(raw_cx_arr, valid_arr, stabilization.window)
-        stable_cy = _smooth_valid_series(raw_cy_arr, valid_arr, stabilization.window)
-        stable_w = _smooth_valid_series(anchor_scale, valid_arr, stabilization.window, log_space=True)
-        rel_h = np.divide(raw_h_arr, raw_w_arr, out=np.ones_like(raw_h_arr), where=raw_w_arr > 0)
-        stable_h = stable_w * rel_h
+    ref_w_float = float(segment.reference_crop_w or 2)
+    ref_h_float = float(segment.reference_crop_h or 2)
 
     for idx, fd in enumerate(segment.frame_data):
         if not valid[idx]:
             continue
-        fd.stable_crop_cx_rot = float(stable_cx[idx])
-        fd.stable_crop_cy_rot = float(stable_cy[idx])
-        fd.stable_crop_w_rot = float(stable_w[idx])
-        fd.stable_crop_h_rot = float(stable_h[idx])
-        if stabilization.enabled:
-            fd.crop_cx_rot = fd.stable_crop_cx_rot
-            fd.crop_cy_rot = fd.stable_crop_cy_rot
-            fd.crop_w_rot = fd.stable_crop_w_rot
-            fd.crop_h_rot = fd.stable_crop_h_rot
-        else:
-            fd.crop_cx_rot = fd.raw_crop_cx_rot
-            fd.crop_cy_rot = fd.raw_crop_cy_rot
-            fd.crop_w_rot = fd.raw_crop_w_rot
-            fd.crop_h_rot = fd.raw_crop_h_rot
-        if np.isfinite(raw_w_arr[idx]) and np.isfinite(stable_w[idx]) and stable_w[idx] > 0:
-            ratio = abs((raw_w_arr[idx] / stable_w[idx]) - 1.0)
-            threshold = max(0.0, float(stabilization.scale_outlier_threshold_ratio))
-            fd.scale_deviation_ratio = ratio if ratio > threshold else 0.0
+        fd.stable_crop_cx_rot = float(raw_cx_arr[idx])
+        fd.stable_crop_cy_rot = float(raw_cy_arr[idx])
+        fd.stable_crop_w_rot = ref_w_float
+        fd.stable_crop_h_rot = ref_h_float
+        fd.crop_cx_rot = fd.stable_crop_cx_rot
+        fd.crop_cy_rot = fd.stable_crop_cy_rot
+        fd.crop_w_rot = fd.stable_crop_w_rot
+        fd.crop_h_rot = fd.stable_crop_h_rot
+        if np.isfinite(raw_w_arr[idx]) and np.isfinite(raw_h_arr[idx]) and ref_w_float > 0 and ref_h_float > 0:
+            w_ratio = abs((raw_w_arr[idx] / ref_w_float) - 1.0)
+            h_ratio = abs((raw_h_arr[idx] / ref_h_float) - 1.0)
+            ratio = max(w_ratio, h_ratio)
+            fd.scale_deviation_ratio = ratio if ratio > SCALE_OUTLIER_THRESHOLD_RATIO else 0.0
         else:
             fd.scale_deviation_ratio = 0.0
-
-
-def _smooth_valid_series(
-    values: np.ndarray,
-    valid: np.ndarray,
-    window: int,
-    *,
-    log_space: bool = False,
-) -> np.ndarray:
-    result = values.astype(np.float64, copy=True)
-    if window <= 1 or int(np.count_nonzero(valid)) <= 2:
-        return result
-
-    idx = np.arange(len(values), dtype=np.float64)
-    valid_idx = idx[valid]
-    valid_vals = values[valid]
-    if log_space:
-        valid_vals = np.log(np.clip(valid_vals, 1e-6, None))
-
-    interpolated = np.interp(idx, valid_idx, valid_vals)
-    kernel = np.ones(window, dtype=np.float64) / float(window)
-    pad = window // 2
-    padded = np.pad(interpolated, (pad, pad), mode="edge")
-    smoothed = np.convolve(padded, kernel, mode="valid")[: len(values)]
-    if log_space:
-        smoothed = np.exp(smoothed)
-    return smoothed
 
 
 def _compute_anchor_distances(
@@ -366,37 +299,7 @@ def _compute_anchor_distances(
 
 
 
-def _extract_crop_stretch(
-    frame: np.ndarray,
-    cx: float,
-    cy: float,
-    face_w: float,
-    S: int,
-    frame_w: int,
-    frame_h: int,
-) -> np.ndarray:
-    """Crop a rectangle of (face_w x S) centered on face, then stretch to SxS."""
-    half_w = face_w / 2.0
-    half_h = S / 2.0
-
-    x1 = int(round(cx - half_w))
-    x2 = int(round(cx + half_w))
-    y1 = int(round(cy - half_h))
-    y2 = int(round(cy + half_h))
-
-    # Clamp and pad
-    crop = _safe_crop(frame, x1, y1, x2, y2, frame_w, frame_h)
-
-    # Stretch to square
-    if crop.shape[0] > 0 and crop.shape[1] > 0:
-        crop = cv2.resize(crop, (S, S), interpolation=cv2.INTER_LINEAR)
-    else:
-        crop = np.zeros((S, S, 3), dtype=np.uint8)
-
-    return crop
-
-
-def _extract_crop_pad(
+def _extract_reference_crop(
     frame: np.ndarray,
     cx: float,
     cy: float,
@@ -406,9 +309,30 @@ def _extract_crop_pad(
     frame_w: int,
     frame_h: int,
 ) -> np.ndarray:
-    """Crop preserving aspect ratio with subpixel center sampling, output SxS."""
-    del face_w, face_h, frame_w, frame_h
-    return cv2.getRectSubPix(frame, (S, S), (float(cx), float(cy)))
+    """Crop a reference face rectangle centered on face, then resize to SxS."""
+    half_w = face_w / 2.0
+    half_h = face_h / 2.0
+
+    x1 = int(round(cx - half_w))
+    x2 = int(round(cx + half_w))
+    y1 = int(round(cy - half_h))
+    y2 = int(round(cy + half_h))
+
+    # Clamp and pad
+    crop = _safe_crop(frame, x1, y1, x2, y2, frame_w, frame_h)
+
+    # Dataset exports are square, so the median reference rectangle is resized to SxS.
+    if crop.shape[0] > 0 and crop.shape[1] > 0:
+        crop = cv2.resize(crop, (S, S), interpolation=cv2.INTER_LINEAR)
+    else:
+        crop = np.zeros((S, S, 3), dtype=np.uint8)
+
+    return crop
+
+
+def _even_round(value: float) -> int:
+    result = max(2, int(round(value / 2.0) * 2))
+    return result
 
 
 def _safe_crop(
@@ -441,5 +365,3 @@ def _safe_crop(
 
     result[dy1:dy2, dx1:dx2] = frame[sy1:sy2, sx1:sx2]
     return result
-
-

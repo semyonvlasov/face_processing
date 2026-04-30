@@ -4,8 +4,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-IMAGE_TAG="${IMAGE_TAG:-face-processing-cpu:latest}"
-CONTAINER_NAME="${CONTAINER_NAME:-face-processing-cpu}"
+IMAGE_TAG="${IMAGE_TAG:-dataset-processing-cpu:latest}"
+CONTAINER_NAME="${CONTAINER_NAME:-dataset-processing-cpu}"
 DATA_ROOT="${DATA_ROOT:-$HOME/.cache/face_processing/process-docker}"
 RCLONE_CONFIG_PATH="${RCLONE_CONFIG_PATH:-$HOME/.config/rclone/rclone.conf}"
 CONFIG_PATH="${CONFIG_PATH:-configs/gdrive_container_cpu.yaml}"
@@ -19,7 +19,7 @@ if [ ! -f "$RCLONE_CONFIG_PATH" ]; then
 fi
 
 if [ ! -f "$MODEL_PATH" ]; then
-  echo "[docker-process] missing face_processing model: $MODEL_PATH" >&2
+  echo "[docker-process] missing MediaPipe model: $MODEL_PATH" >&2
   exit 1
 fi
 
@@ -37,7 +37,7 @@ docker run --rm --init \
   -e PYTHONDONTWRITEBYTECODE=1 \
   -v "$REPO_ROOT:/workspace/repo:ro" \
   -v "$DATA_ROOT:/workspace-data" \
-  -v "$RCLONE_CONFIG_DIR:/root/.config/rclone:ro" \
+  -v "$RCLONE_CONFIG_DIR:/root/.config/rclone" \
   -w /workspace/repo \
   "$IMAGE_TAG" \
   python3 batch/gdrive_processor.py \

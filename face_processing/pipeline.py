@@ -7,7 +7,7 @@ import tempfile
 
 from face_processing.analysis_core import run_core_analysis
 from face_processing.config import PipelineConfig
-from face_processing.crop_export import compute_output_size, export_segment, prepare_segment_crop_geometry
+from face_processing.crop_export import export_segment, prepare_segment_crop_geometry
 from face_processing.frame_quality import (
     DROP_REASON_PRIORITY,
     classify_frames,
@@ -78,9 +78,8 @@ def process_video(input_path: str, config: PipelineConfig | None = None) -> Vide
     # --- Stage 5: Ranking ---
     logger.info("=== Stage 5: Ranking segments ===")
     for seg in exportable:
-        S = compute_output_size(seg, frame_w, frame_h)
-        seg.output_size = S
-        prepare_segment_crop_geometry(seg, frame_w, frame_h, config.stabilization)
+        prepare_segment_crop_geometry(seg, frame_w, frame_h)
+        S = seg.output_size or seg.reference_crop_h or 2
         metrics = compute_segment_metrics(seg)
         seg.metrics = metrics
         seg.rank = rank_segment(metrics, config.ranking, S)
@@ -99,7 +98,6 @@ def process_video(input_path: str, config: PipelineConfig | None = None) -> Vide
             seg, normalized_path, seg_path,
             frame_w, frame_h, seg.output_size, config.export,
             source_video_path=input_path,
-            use_stabilized_crop=config.stabilization.enabled,
         )
         seg.status = "exported"
 

@@ -30,7 +30,7 @@ def run_core_analysis(
 ) -> CoreAnalysisResult:
     """Normalize video and extract per-frame face landmarks + pose.
 
-    Shared by both face_processing and face_framedata pipelines.
+    Shared by dataset_processing and call_video_preparation internals.
     """
     logger.info("=== Stage 1: Normalizing video ===")
     normalized_path = os.path.join(out_dir, "normalized.mp4")

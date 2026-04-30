@@ -9,7 +9,6 @@ paths:
   processing_folder: /workspace-data/process/raw_faceclips_cycle
   manifest_path: /workspace-data/process/raw_faceclips_cycle/archive_manifest.jsonl
 
-face_processing:
-  detection:
-    use_gpu: false
-    model_path: /workspace/repo/assets/face_landmarker_v2_with_blendshapes.task
+dataset_processing:
+  use_gpu: false
+  model_path: /workspace/repo/assets/face_landmarker_v2_with_blendshapes.task

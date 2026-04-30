@@ -7,7 +7,9 @@ build/
 .venv/
 venv/
 .env
+.claude/
 assets/*.task
+data/
 output/
 output_*/
 test/output/

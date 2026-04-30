@@ -52,6 +52,7 @@ class BadFrameThresholds:
     max_delta_pitch: float = 10.0
     max_delta_roll: float = 12.0
     max_face_h_ratio_deviation: float = 0.12
+    max_face_w_ratio_deviation: float = 0.12
     min_confidence: float = 0.5
     min_segment_length: int = 50
     max_segment_length: int = 200  # 8 sec at 25fps
@@ -70,6 +71,7 @@ class RankingThresholds:
     conf_max_abs_pitch: float = 16.0
     conf_max_abs_roll: float = 12.0
     conf_face_size_std_ratio: float = 0.08
+    conf_face_width_std_ratio: float = 0.08
     conf_std_cx_ratio: float = 0.04
     conf_std_cy_ratio: float = 0.04
     conf_eye_dist_std_ratio: float = 0.03
@@ -85,6 +87,7 @@ class RankingThresholds:
     med_max_abs_pitch: float = 20.0
     med_max_abs_roll: float = 18.0
     med_face_size_std_ratio: float = 0.15
+    med_face_width_std_ratio: float = 0.15
     med_std_cx_ratio: float = 0.08
     med_std_cy_ratio: float = 0.08
     med_eye_dist_std_ratio: float = 0.06
@@ -95,15 +98,8 @@ class RankingThresholds:
 
 
 @dataclass
-class StabilizationConfig:
-    enabled: bool = True
-    window: int = 5
-    scale_outlier_threshold_ratio: float = 0.04
-
-
-@dataclass
 class ExportConfig:
-    mode: str = "stretch_to_square"
+    mode: str = "median_face_rect"
     fps: int = 25
     bitrate: str = "1M"
     codec: str = "libx264"
@@ -120,7 +116,6 @@ class PipelineConfig:
     pose: PoseConfig = field(default_factory=PoseConfig)
     bad_frame: BadFrameThresholds = field(default_factory=BadFrameThresholds)
     ranking: RankingThresholds = field(default_factory=RankingThresholds)
-    stabilization: StabilizationConfig = field(default_factory=StabilizationConfig)
     export: ExportConfig = field(default_factory=ExportConfig)
     save_frame_log: bool = False
     keep_normalized: bool = False
@@ -137,7 +132,6 @@ class PipelineConfig:
             "pose": PoseConfig,
             "bad_frame": BadFrameThresholds,
             "ranking": RankingThresholds,
-            "stabilization": StabilizationConfig,
             "export": ExportConfig,
         }
         for key, cls in _nested.items():
